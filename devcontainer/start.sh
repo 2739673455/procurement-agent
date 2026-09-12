@@ -48,6 +48,7 @@ apps = json.load(sys.stdin)
 if not {"frappe", "erpnext"}.issubset(apps.get("development.localhost", [])):
     sys.exit("Site is missing Frappe or ERPNext. Repair installation before restarting.")
 '
+bash /workspace/devcontainer/install-app.sh
 bench use "$site"
 echo "Starting ERPNext: http://development.localhost:8000"
 exec bench start

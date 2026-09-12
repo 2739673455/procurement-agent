@@ -2,7 +2,7 @@
 
 本项目探索如何把 Agent 嵌入 ERPNext 的日常业务页面。用户处理单据时可以直接唤起助手，让它结合当前业务上下文查询、分析并给出建议。
 
-当前已纳入 Docker 开发配置和官方 frappe_docker 子模块，尚未初始化应用或接入 ERPNext。面向其他项目的需求文档不作为本项目的实施规格。以下是讨论方案，不代表全部选型已确定。
+当前已纳入 Docker 开发配置和官方 frappe_docker 子模块，已安装首个采购助手入口 App，尚未接入 Agent 模型。面向其他项目的需求文档不作为本项目的实施规格。以下是讨论方案，不代表全部选型已确定。
 
 ## 1. 想要的使用体验
 
@@ -140,3 +140,18 @@ cd /workspace/frappe_docker/development/frappe-bench
 另一台设备首次克隆使用 `git clone --recurse-submodules <项目仓库地址>`；已有仓库执行 `git pull` 和 `git submodule update --init --recursive` 后再启动。每台设备的数据库和站点独立初始化。
 
 `frappe_docker/development/frappe-bench/` 和初始化标记由上游忽略规则排除，数据库保存在 Docker 命名卷中，均不随主仓库同步。自己的 App 源码后续放在主仓库管理并配置挂载，不仅保存在被忽略的 Bench 目录中。官方子模块内不维护定制，开发配置统一提交到 `devcontainer/`。
+
+
+## 8. 采购助手 App 原型
+
+源码位于 `apps/procurement_assistant/`，由 Bench 中的软链接引用。自动启动脚本会注册本地 App、安装到站点、构建静态资源并清理缓存，因此其他设备初始化时也会安装该 App。
+
+登录 ERPNext 后搜索 `Material Request`（物料需求），打开或新建单据，将用途设置为 `Purchase`（采购）。页面工具栏的“采购助手”按钮打开右侧面板，显示当前单据、公司和物料明细；勾选明细后重新打开可查看选择范围。未保存修改时提示先保存，切换页面会关闭面板。
+
+目前是页面入口与上下文展示原型，不调用模型、不查询额外供应商数据，也不写入业务单据。面板中的文本通过安全文本节点渲染。手动重新安装或构建可执行：
+
+```bash
+docker compose -f devcontainer/docker-compose.yml exec -T frappe bash /workspace/devcontainer/install-app.sh
+```
+
+新增 App 后首次刷新浏览器；若服务进程仍持有旧 App 缓存，重启 `frappe` 服务。后续供应商查询接口必须在服务端验证用户与数据权限。
