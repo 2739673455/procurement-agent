@@ -2,7 +2,7 @@
 
 本项目探索如何把 Agent 嵌入 ERPNext 的日常业务页面。用户处理单据时可以直接唤起助手，让它结合当前业务上下文查询、分析并给出建议。
 
-当前仅保留方案说明，尚未初始化应用或接入 ERPNext。面向其他项目的需求文档不作为本项目的实施规格。以下是讨论方案，不代表全部选型已确定。
+当前已纳入 Docker 开发配置和官方 frappe_docker 子模块，尚未初始化应用或接入 ERPNext。面向其他项目的需求文档不作为本项目的实施规格。以下是讨论方案，不代表全部选型已确定。
 
 ## 1. 想要的使用体验
 
@@ -109,4 +109,34 @@ flowchart LR
 4. **真实数据**：确认供应商与物料的关联、历史交易和权限是否足以支持第一条分析链路。
 5. **Agent 接入**：再确定服务部署、模型、身份委托、任务状态和工具契约。
 
-先在目标版本完成入口原型，再扩展多页面。仓库现阶段保留本说明和 AGENTS.md 开发约定，不预建服务目录或引入完整采购需求规格。
+先在目标版本完成入口原型，再扩展多页面。仓库维护方案、开发约定和开发环境配置，后续按需要创建 App 与 Agent 源码。
+
+
+## 7. Docker 开发环境
+
+官方仓库作为 `frappe_docker/` Git 子模块固定版本，我们的开发配置和启动脚本位于 `devcontainer/`。在项目根目录执行：
+
+```bash
+git submodule update --init --recursive
+docker compose -f devcontainer/docker-compose.yml up -d
+docker compose -f devcontainer/docker-compose.yml logs -f frappe
+```
+
+Compose 项目名固定为 `erpnext-dev`。启动脚本等待数据库和 Redis 健康后，首次自动创建 version-16 Bench、安装 ERPNext 并创建 `development.localhost` 站点；已有完整环境直接启动 `bench start`，无需手动进入容器。首次下载、依赖安装和资源构建需要时间，容器运行不表示初始化已完成，请查看日志。
+
+访问 http://development.localhost:8000 ，本机开发账号为 `Administrator`，首次密码为 `admin`。已有站点的密码不重置。端口 8000 和 9000 仅发布到本机。
+
+整个项目挂载到 `/workspace`，保留子模块与主仓库 `.git/modules/` 的相对位置。Bench 位于 `/workspace/frappe_docker/development/frappe-bench`。调试时进入：
+
+```bash
+docker compose -f devcontainer/docker-compose.yml exec --user frappe frappe bash
+cd /workspace/frappe_docker/development/frappe-bench
+```
+
+停止环境执行 `docker compose -f devcontainer/docker-compose.yml down`，再次 `up -d` 即可启动；不要加 `-v`，否则会删除数据库卷。首次采用自动启动配置时先停止原终端中的 `bench start`，再执行 `up -d`，Compose 会重建配置变化的容器。
+
+初始化失败会退出并保留现场，不自动删除或覆盖数据。未完成的初始化会留下 `frappe_docker/development/.procurement-initializing` 标记；需要检查日志和修复环境后再移除该标记重试。已有 Bench 不完整、站点数据库缺失或 ERPNext 未安装时也会报错，不以目录存在作为成功依据。启动脚本不自动升级或迁移现有应用。
+
+另一台设备首次克隆使用 `git clone --recurse-submodules <项目仓库地址>`；已有仓库执行 `git pull` 和 `git submodule update --init --recursive` 后再启动。每台设备的数据库和站点独立初始化。
+
+`frappe_docker/development/frappe-bench/` 和初始化标记由上游忽略规则排除，数据库保存在 Docker 命名卷中，均不随主仓库同步。自己的 App 源码后续放在主仓库管理并配置挂载，不仅保存在被忽略的 Bench 目录中。官方子模块内不维护定制，开发配置统一提交到 `devcontainer/`。
