@@ -1,0 +1,58 @@
+server:
+  host: "" # 留空时自动检测 Docker 网桥网关。
+  port: 8100
+
+# 会话目录和 LangGraph 检查点共用这个独立数据库。
+langgraph_postgresql:
+  host: "127.0.0.1"
+  port: 5433
+  user: "atguigu"
+  password: ${oc.env:ASSISTANT_PG_PASSWORD}
+  database: "procurement_assistant"
+
+erpnext:
+  base_url: "http://127.0.0.1:8000"
+  site: "development.localhost"
+  timeout_seconds: 5
+
+lm_config:
+  active: deepseek-deepseek-v4-flash
+  models:
+    deepseek-deepseek-v4-flash:
+      model_provider: deepseek
+      api_protocol: responses
+      model: deepseek-v4-flash
+      base_url: https://api.deepseek.com
+      api_key: ${oc.env:DEEPSEEK_API_KEY,""}
+      params: {}
+      profile:
+        image_inputs: false
+        structured_output: false
+        max_input_tokens: 1048576
+      timeout_seconds: 30
+    openrouter-deepseek-v4-flash:
+      model_provider: openrouter
+      api_protocol: chat_completions
+      model: deepseek/deepseek-v4-flash-0731
+      base_url: https://openrouter.ai/api/v1
+      api_key: ${oc.env:OPENROUTER_API_KEY,""}
+      params: {}
+      profile:
+        image_inputs: false
+        structured_output: true
+        max_input_tokens: 1048576
+      timeout_seconds: 30
+    openrouter-glm-5.3-flash:
+      model_provider: openrouter
+      api_protocol: chat_completions
+      model: z-ai/glm-5.3-flash
+      base_url: https://openrouter.ai/api/v1
+      api_key: ${oc.env:OPENROUTER_API_KEY,""}
+      params:
+        reasoning:
+          effort: high
+      profile:
+        image_inputs: true
+        structured_output: false
+        max_input_tokens: 1048576
+      timeout_seconds: 30

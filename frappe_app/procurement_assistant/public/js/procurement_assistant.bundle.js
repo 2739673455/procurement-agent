@@ -1,26 +1,35 @@
 (() => {
     const key = "procurement_assistant_panel";
     const launcherKey = "procurement_assistant_launcher";
+    let connection;
+    let generation = 0;
 
     function close() {
-        const panel = document.getElementById(key);
-        if (panel) panel.remove();
-        const launcher = document.getElementById(launcherKey);
-        if (launcher) {
-            launcher.hidden = false;
-            launcher.setAttribute("aria-expanded", "false");
-        }
+        generation++;
+        connection?.abort();
+        document.getElementById(key)?.remove();
+        document.getElementById(launcherKey)?.setAttribute("aria-expanded", "false");
     }
 
-    const conversations = new Map();
-    function show() {
+    async function request(action, data = {}, signal) {
+        const response = await fetch("/api/method/procurement_assistant.api.conversations", {
+            method: "POST", credentials: "same-origin", signal,
+            headers: {"Content-Type": "application/json", "X-Frappe-CSRF-Token": frappe.csrf_token},
+            body: JSON.stringify({action, ...data}),
+        });
+        if (response.headers.get("content-type")?.includes("text/event-stream")) return response;
+        const body = await response.json();
+        const result = body.message || body;
+        if (!response.ok || result.error) throw new Error(result.error || "请求失败，请检查登录状态。");
+        return result;
+    }
+
+    async function show() {
         close();
-        const route = frappe.get_route();
-        const conversationKey = JSON.stringify([frappe.session.user, ...route]);
-        if (!conversations.has(conversationKey)) {
-            conversations.set(conversationKey, { turns: [], pending: false, error: "" });
-        }
-        const state = conversations.get(conversationKey);
+        const version = generation;
+        const storageKey = `procurement-conversation:${frappe.session.user}`;
+        let current = localStorage.getItem(storageKey);
+        let busy = false;
         const panel = document.createElement("aside");
         panel.id = key;
         panel.className = "procurement-assistant-panel";
@@ -28,120 +37,205 @@
         const header = document.createElement("header");
         const title = document.createElement("h3");
         title.textContent = "采购助手";
-        const closeButton = document.createElement("button");
-        closeButton.className = "btn btn-default btn-sm";
-        closeButton.textContent = "关闭";
-        closeButton.onclick = () => { close(); document.getElementById(launcherKey)?.focus(); };
-        header.append(title, closeButton);
+        function button(label, handler) {
+            const el = document.createElement("button");
+            el.type = "button";
+            el.className = "btn btn-default btn-sm";
+            el.textContent = label;
+            el.onclick = handler;
+            return el;
+        }
+        header.append(title, button("关闭", close));
+        const select = document.createElement("select");
+        select.className = "form-control";
+        select.setAttribute("aria-label", "选择对话");
+        const toolbar = document.createElement("div");
+        toolbar.className = "procurement-chat-toolbar";
         const context = document.createElement("p");
         context.className = "procurement-chat-context";
-        context.textContent = `当前页面：${route.slice(1).join(" / ") || "Buying"}`;
+        context.textContent = `当前页面：${frappe.get_route().join(" / ")}（未读取单据内容）`;
         const log = document.createElement("div");
         log.className = "procurement-chat-log";
         log.setAttribute("role", "log");
-        log.setAttribute("aria-live", "polite");
         const status = document.createElement("p");
         status.className = "procurement-chat-status";
         status.setAttribute("role", "status");
         const form = document.createElement("form");
         form.className = "procurement-chat-composer";
         const input = document.createElement("textarea");
+        input.rows = 3;
+        input.maxLength = 4000;
         input.placeholder = "例如：查询名称包含螺丝的物料";
         input.setAttribute("aria-label", "发送给采购助手的问题");
-        input.maxLength = 4000;
-        input.rows = 3;
         const actions = document.createElement("div");
-        const reset = document.createElement("button");
-        reset.type = "button";
-        reset.className = "btn btn-default btn-sm";
-        reset.textContent = "清空对话";
-        reset.onclick = () => { state.turns = []; state.error = ""; render(); };
-        const send = document.createElement("button");
-        send.type = "submit";
-        send.className = "btn btn-primary btn-sm";
-        send.textContent = "发送";
-        actions.append(reset, send);
+        const send = button("发送", () => form.requestSubmit());
+        const stop = button("停止生成", () => guard(async () => {
+            await request("stop", {conversation_id: current});
+        }));
+        actions.append(stop, send);
         form.append(input, actions);
-        panel.append(header, context, log, status, form);
+        panel.append(header, select, toolbar, context, log, status, form);
+        document.body.append(panel);
+        document.getElementById(launcherKey)?.setAttribute("aria-expanded", "true");
 
-        function render() {
-            log.replaceChildren();
-            if (!state.turns.length) {
-                const welcome = document.createElement("p");
-                welcome.textContent = "你好，我可以查询 ERPNext 中你有权访问的 Item（物料）。可以按编码、名称搜索，也可以让我列出物料。当前只支持查询，不修改业务数据。";
-                log.append(welcome);
+        function active() { return generation === version && panel.isConnected; }
+        async function guard(fn) {
+            try { await fn(); }
+            catch (error) { if (active() && error.name !== "AbortError") status.textContent = error.message; }
+        }
+        function setBusy(value) {
+            busy = value;
+            input.disabled = send.disabled = value || !current;
+            stop.disabled = !value;
+            status.textContent = value ? "正在生成…" : "";
+        }
+        function bubble(role, content) {
+            const el = document.createElement("div");
+            el.className = `procurement-chat-message ${role}`;
+            const label = document.createElement("strong");
+            label.textContent = role === "user" ? "你" : role === "tool" ? "工具结果" : "采购助手";
+            const text = document.createElement("p");
+            text.textContent = typeof content === "string" ? content : JSON.stringify(content);
+            el.append(label, text);
+            log.append(el);
+            log.scrollTop = log.scrollHeight;
+            return {el, text};
+        }
+        function toolResult(result) {
+            const {el} = bubble("tool", result.error || `返回 ${result.items?.length || 0} 条物料，起始位置 ${result.offset || 0}${result.has_more ? "，还有更多结果" : ""}`);
+            for (const item of result.items || []) {
+                el.append(button(`${item.item_code || item.name} · ${item.item_name || "查看物料"}`, () => frappe.set_route("Form", "Item", item.name)));
             }
-            for (const turn of state.turns) {
-                const bubble = document.createElement("div");
-                bubble.className = `procurement-chat-message ${turn.role}`;
-                const label = document.createElement("strong");
-                label.textContent = turn.role === "user" ? "你" : "采购助手";
-                const content = document.createElement("p");
-                content.textContent = turn.content;
-                bubble.append(label, content);
-                for (const query of turn.queries || []) {
-                    const summary = document.createElement("p");
-                    summary.textContent = `Item 查询「${query.query || "全部"}」：返回 ${query.items.length} 条，起始位置 ${query.offset}${query.has_more ? "，还有更多结果" : ""}`;
-                    bubble.append(summary);
-                    for (const item of query.items) {
-                        if (!item.name) continue;
-                        const link = document.createElement("button");
-                        link.type = "button";
-                        link.className = "btn btn-link btn-sm";
-                        link.textContent = `${item.item_code || item.name} · ${item.item_name || "查看物料"}`;
-                        link.onclick = () => frappe.set_route("Form", "Item", item.name);
-                        bubble.append(link);
+        }
+        async function list() {
+            const data = await request("list");
+            if (!active()) return;
+            select.replaceChildren();
+            for (const row of data.conversations) {
+                const option = document.createElement("option");
+                option.value = row.id;
+                option.textContent = row.title;
+                select.append(option);
+            }
+            if (!data.conversations.some(row => row.id === current)) current = data.conversations[0]?.id || null;
+            if (current) {
+                select.value = current;
+                localStorage.setItem(storageKey, current);
+            } else localStorage.removeItem(storageKey);
+        }
+        async function load() {
+            connection?.abort();
+            log.replaceChildren();
+            if (!current) {
+                bubble("assistant", "新建对话后，可以让我查询你有权访问的 ERPNext 物料。");
+                setBusy(false);
+                return;
+            }
+            const id = current;
+            const data = await request("messages", {conversation_id: id});
+            if (!active() || current !== id) return;
+            for (const message of data.messages) {
+                if (message.role === "tool") toolResult(message.result);
+                else bubble(message.role, message.content);
+            }
+            setBusy(data.running);
+            if (data.running) await stream("subscribe", id);
+        }
+        async function stream(action, id, message) {
+            const controller = new AbortController();
+            connection = controller;
+            let errorText = "";
+            let answer;
+            let done = false;
+            try {
+                const response = await request(action, {conversation_id: id, ...(message ? {message} : {})}, controller.signal);
+                if (!(response instanceof Response)) throw new Error("未收到对话事件流。");
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = "";
+                while (true) {
+                    const chunk = await reader.read();
+                    if (chunk.done) break;
+                    buffer += decoder.decode(chunk.value, {stream: true});
+                    let boundary;
+                    while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+                        const frame = buffer.slice(0, boundary);
+                        buffer = buffer.slice(boundary + 2);
+                        if (!frame.startsWith("data: ")) continue;
+                        const event = JSON.parse(frame.slice(6));
+                        if (!active() || current !== id) return;
+                        if (event.type === "delta") {
+                            answer ||= bubble("assistant", "");
+                            answer.text.textContent += event.delta;
+                        } else if (event.type === "tool_start") {
+                            answer = null;
+                            status.textContent = "正在查询物料…";
+                        } else if (event.type === "tool_result") toolResult(event.result);
+                        else if (event.type === "error") errorText = event.error;
+                        else if (event.type === "stopped") errorText = "已停止生成。";
+                        else if (event.type === "done") done = true;
+                        log.scrollTop = log.scrollHeight;
                     }
                 }
-                log.append(bubble);
+                if (!done) throw new Error("连接中断，请重新打开对话恢复状态。");
+            } finally {
+                if (active() && current === id && !controller.signal.aborted) {
+                    setBusy(false);
+                    // Checkpoints are the source of truth; replace transient stream output.
+                    const data = await request("messages", {conversation_id: id});
+                    if (active() && current === id) {
+                        log.replaceChildren();
+                        for (const item of data.messages) {
+                            if (item.role === "tool") toolResult(item.result);
+                            else bubble(item.role, item.content);
+                        }
+                        setBusy(data.running);
+                        status.textContent = errorText || (data.running ? "任务仍在执行，请重新打开对话连接。" : "");
+                    }
+                }
             }
-            status.textContent = state.pending ? "正在分析并查询物料…" : state.error;
-            input.disabled = send.disabled = reset.disabled = state.pending;
-            log.scrollTop = log.scrollHeight;
         }
-        state.render = () => { if (panel.isConnected) render(); };
-        form.onsubmit = async (event) => {
+        toolbar.append(
+            button("新建", () => guard(async () => {
+                const data = await request("create");
+                current = data.id;
+                await list(); await load();
+            })),
+            button("重命名", () => guard(async () => {
+                if (!current) return;
+                const title = window.prompt("对话名称", select.selectedOptions[0]?.textContent || "");
+                if (!title?.trim()) return;
+                await request("rename", {conversation_id: current, title: title.trim()});
+                await list();
+            })),
+            button("删除", () => guard(async () => {
+                if (!current || !window.confirm("删除此对话及其历史？正在执行的任务也会停止。")) return;
+                await request("delete", {conversation_id: current});
+                current = null;
+                await list(); await load();
+            })),
+        );
+        select.onchange = () => guard(async () => {
+            current = select.value;
+            localStorage.setItem(storageKey, current);
+            await load();
+        });
+        form.onsubmit = event => {
             event.preventDefault();
             const message = input.value.trim();
-            if (!message || state.pending) return;
-            // Only completed turns are sent; failed requests can be retried safely.
-            const history = state.turns.filter(t => !t.failed).slice(-20).map(({role, content}) => ({role, content}));
-            const turn = {role: "user", content: message};
-            state.turns.push(turn);
-            state.pending = true;
-            state.error = "";
+            if (!message || busy || !current) return;
             input.value = "";
-            render();
-            try {
-                const response = await frappe.call({
-                    method: "procurement_assistant.api.chat",
-                    args: {message, history: JSON.stringify(history)},
-                });
-                const result = response.message;
-                if (result?.error) throw new Error(result.error);
-                if (typeof result?.reply !== "string") throw new Error("服务未返回有效回复，请重试。");
-                state.turns.push({role: "assistant", content: result.reply, queries: result.queries || []});
-            } catch (error) {
-                turn.failed = true;
-                state.error = error instanceof Error ? error.message : "请求失败，请检查登录状态并重试。";
-                if (panel.isConnected) input.value = message;
-            } finally {
-                state.pending = false;
-                state.render();
-            }
+            bubble("user", message);
+            setBusy(true);
+            guard(() => stream("send", current, message));
         };
-        input.addEventListener("keydown", event => {
+        input.onkeydown = event => {
             if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
                 event.preventDefault(); form.requestSubmit();
             }
-        });
-        panel.addEventListener("keydown", event => {
-            if (event.key === "Escape") closeButton.click();
-        });
-        document.body.append(panel);
-        document.getElementById(launcherKey)?.setAttribute("aria-expanded", "true");
-        render();
-        input.focus();
+        };
+        setBusy(false);
+        await guard(async () => { await list(); await load(); });
     }
 
     function syncLauncher() {

@@ -19,14 +19,6 @@ services:
       retries: 30
       start_period: 20s
 
-  # Enable PostgreSQL only if you use it, see development/README.md for more information.
-  # postgresql:
-  #   image: postgres:14
-  #   environment:
-  #     POSTGRES_PASSWORD: 123
-  #   volumes:
-  #     - postgresql-data:/var/lib/postgresql/data
-
   # Enable Mailpit if you need to test outgoing mail services
   # See https://mailpit.axllent.org/
   #  mailpit:
@@ -114,5 +106,4 @@ services:
   #   network_mode: "host"
 volumes:
   mariadb-data:
-  #postgresql-data:
   #mailpit-data:

@@ -1,34 +1,63 @@
-"""Authenticated chat entry point; business reads use ERPNext's native API."""
+"""Same-origin authenticated JSON/SSE gateway; ERPNext remains the identity authority."""
+
 import json
 import os
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import frappe
+from werkzeug.wrappers import Response
 
 
 @frappe.whitelist(methods=["POST"])
-def chat(message, history=None):
+def conversations(action, conversation_id=None, message="", title=""):
     if frappe.session.user == "Guest":
         frappe.throw("请先登录。", frappe.PermissionError)
-    if not isinstance(message, str) or not message.strip() or len(message) > 4000:
-        frappe.throw("请输入 1–4000 字的问题。")
-    history = frappe.parse_json(history) if isinstance(history, str) else history
-    payload = {"message": message, "history": history or [], "sid": frappe.session.sid}
+    payload = {
+        "action": action,
+        "conversation_id": conversation_id,
+        "message": message,
+        "title": title,
+        "sid": frappe.session.sid,
+    }
     data = json.dumps(payload).encode()
-    if len(data) > 200_000:
-        frappe.throw("对话过长，请新建对话。")
-    agent_url = os.environ.get("PROCUREMENT_AGENT_URL", "http://host.docker.internal:8100").rstrip("/")
-    request = Request(agent_url + "/chat", data=data, headers={"Content-Type": "application/json"})
+    if len(data) > 20000:
+        return {"error": "请求过大。"}
+    base = os.getenv(
+        "PROCUREMENT_AGENT_URL", "http://host.docker.internal:8100"
+    ).rstrip("/")
+    request = Request(
+        base + "/conversations", data=data, headers={"Content-Type": "application/json"}
+    )
     try:
-        with urlopen(request, timeout=95) as response:
-            return json.load(response)
+        upstream = urlopen(request, timeout=35)
     except HTTPError as exc:
         try:
-            error = json.load(exc).get("error", "Agent 请求失败。")
+            with exc:
+                return {"error": json.load(exc).get("error", "助手请求失败。")}
         except (ValueError, AttributeError):
-            error = "Agent 请求失败。"
-        # Return expected operational failures as data, not HTML error dialogs.
-        return {"error": error}
+            return {"error": "助手请求失败。"}
     except (URLError, TimeoutError):
-        return {"error": "Agent 服务暂时不可用，请稍后重试。"}
+        return {"error": "助手服务暂时不可用。"}
+    if action not in ("send", "subscribe"):
+        with upstream:
+            return json.load(upstream)
+
+    def stream():
+        try:
+            with upstream:
+                yield from upstream
+        except (OSError, ValueError):
+            yield (
+                "data: "
+                + json.dumps({"type": "error", "error": "连接中断，请重新打开对话。"})
+                + "\n\n"
+            ).encode()
+
+    response = Response(
+        stream(),
+        content_type="text/event-stream; charset=utf-8",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+    response.call_on_close(upstream.close)
+    return response

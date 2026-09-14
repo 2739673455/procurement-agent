@@ -5,7 +5,16 @@ description = "ERPNext procurement assistant service"
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "fastapi>=0.141.1",
+    "httpx>=0.28.1,<1",
+    "langchain>=1.2.7,<2",
+    "langchain-openai>=1.1.7,<2",
+    "langchain-openrouter>=0.2.8,<0.3",
+    "langgraph>=1.0.7,<2",
+    "langgraph-checkpoint-postgres>=3.1.2,<4",
+    "omegaconf>=2.3.0,<3",
+    "psycopg[binary,pool]>=3.3.4,<4",
     "python-dotenv>=1.2.3",
+    "sqlalchemy[asyncio]>=2.0.46,<3",
     "uvicorn>=0.52.4",
 ]
 

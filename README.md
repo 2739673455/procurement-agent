@@ -68,11 +68,10 @@ flowchart LR
 | Frappe App 服务端 | 验证当前登录用户，将聊天请求接入 Agent；仅按需补充原生 API 缺失能力 |
 | Agent 服务        | 理解问题、选择工具、组织分析和管理任务，不持有无限制业务访问权限 |
 
-浏览器通过 Frappe 同源接口 `procurement_assistant.api.chat` 发送问题。当前开发版只支持现有站点的浏览器登录会话：Frappe 服务端将会话凭证交给同机运行的 Agent，Agent 调用原生登录身份接口核实用户，并携同一会话调用 Item API。会话只在本轮请求内使用，不写日志、不传给模型、不在 Agent 中持久化。Agent 仅监听宿主机 Docker 网桥地址的 8100 端口，Frappe 通过 host.docker.internal 连接。
+浏览器通过 Frappe 同源接口 `procurement_assistant.api.conversations` 发送问题。当前开发版只支持现有站点的浏览器登录会话：Frappe 服务端将会话凭证交给同机运行的 Agent，Agent 调用原生登录身份接口核实用户，并携同一会话调用 Item API。会话只在本轮请求内使用，不写日志、不传给模型、不在 Agent 中持久化。Agent 仅监听宿主机 Docker 网桥地址的 8100 端口，Frappe 通过 host.docker.internal 连接。
 
 这是一种开发环境下的会话委托，凭证本身仍具有用户原有权限，尚未实现 OAuth 或细粒度短期授权。当前 Agent 只提供固定 Item 只读工具，不能自选站点、任意 API 或写动作。后续生产接入需设计正式的委托与撤销机制。
 
-当前聊天采用同步请求，一次只执行一个问题；工具调用和超时有上限。前端显示等待和失败状态，对话暂存于浏览器内存并按用户与页面隔离，刷新后清空，不代表已经实现持久任务或长期记忆。
 
 ## 4. 共用面板如何理解不同页面
 
@@ -146,35 +145,38 @@ cd /workspace/frappe_docker/development/frappe-bench
 ## 8. 对话助手与 Item 工具
 
 - `frappe_app/`：Buying 内常驻的对话面板，以及 Frappe 登录会话接入接口。
-- `assistant/server.py`：独立 Agent HTTP 服务，使用支持 Chat Completions 函数工具调用的模型接口。
+- `assistant/main.py`：独立 Agent HTTP 服务，使用支持 Chat Completions 函数工具调用的模型接口。
 - `query_items(query, offset=0, limit=10)`：Agent 侧工具，通过 ERPNext 原生 `GET /api/resource/Item` 查询，不重建查询业务接口。
 
 进入 Buying 任意页面，点击右下角图标发送“列出前 5 个物料”或“查询名称包含螺丝的 Item”。工具只返回当前用户有权访问的编码、名称、物料组、单位和停用状态，最多每页 20 条，明确是否还有下一页。含 `%`、`_` 或反斜杠的关键词按完整编码或名称精确查询，避免将编码中的通配符当作模糊匹配。
 
-回复下方显示真实工具查询结果的物料链接。模型不能查询库存或价格，也不能创建、修改、提交单据。当前页面只用于前端标识和会话隔离，不自动读取单据正文；需要用户输入物料关键词或编码。
+回复下方显示真实工具查询结果的物料链接。模型不能查询库存或价格，也不能创建、修改、提交单据。当前页面只用于前端位置标识，不自动读取单据正文；需要用户输入物料关键词或编码。
 
-支持连续追问、清空对话、Enter 发送和 Shift+Enter 换行。关闭面板后本轮请求继续，结果仍归属原页面；切换页面不会把旧响应显示在新页面。最近最多 20 条已完成消息用于后续推理，历史仅保存在当前浏览器内存。
+支持新建、切换、重命名、删除对话、连续追问、流式回复和停止生成。Enter 发送，Shift+Enter 换行。对话由后端保存，同一用户可跨页面使用；浏览器只记住最近选择的会话 ID。关闭面板只断开订阅，后台任务继续；重新打开后恢复已持久化历史并订阅后续输出。
 
 ### 配置模型
 
-复制 `assistant/.env.example` 为 `assistant/.env`，填写：
+复制 `assistant/conf/.env.example` 为 `assistant/conf/.env`，填写：
 
 ```dotenv
-LLM_BASE_URL=https://你的模型服务地址/v1
-LLM_MODEL=支持工具调用的模型名
-LLM_API_KEY=你的密钥
+DEEPSEEK_API_KEY=你的密钥
+OPENROUTER_API_KEY=你的密钥
+ASSISTANT_PG_PASSWORD=assistant_dev
 ```
 
-`assistant/.env` 已被 Git 忽略，不要提交密钥。也支持不需要密钥的本地兼容服务；Agent 在本机运行，可直接使用本机模型的 localhost 地址。
+模型名称和接口地址直接填写在 `assistant/conf/app_config.yaml` 的 `lm_config.models` 中。服务地址、端口和数据库名称等普通配置也直接修改 YAML；`.env` 仅保存 API Key、密码等私密信息。
+
+`assistant/conf/.env` 已被 Git 忽略，不要提交密钥。也支持不需要密钥的本地兼容服务；Agent 在本机运行，可直接使用本机模型的 localhost 地址。
 
 在项目根目录执行：
 
 ```bash
 docker compose -f devcontainer/docker-compose.yml up -d
-uv run --project assistant python assistant/server.py
+docker compose --env-file assistant/conf/.env -f assistant/docker-compose.yml up -d
+uv run --directory assistant python main.py
 ```
 
-未配置模型时服务仍可启动，发送消息会明确提示配置缺失，不会生成模拟 AI 结果。健康检查表示 HTTP 服务运行，不表示模型已可用。配置真实模型后，用户问题、最近对话和工具返回的 Item 字段会发往该模型服务，登录凭证不会发送。
+未配置模型时服务仍可启动，发送消息会明确提示配置缺失，不会生成模拟 AI 结果。健康检查表示 HTTP 服务运行，不表示模型已可用。配置真实模型后，用户问题、会话历史和工具返回的 Item 字段会发往该模型服务，登录凭证不会发送。
 
 ### 开发与验证
 
@@ -184,17 +186,50 @@ App 由 Bench 软链接引用主仓库源码，启动时自动安装并构建。
 docker compose -f devcontainer/docker-compose.yml exec -T frappe bash /workspace/devcontainer/install-app.sh
 ```
 
-Assistant 使用 FastAPI 提供 `/health` 和 `/chat`，Uvicorn 运行 ASGI 服务；现有同步模型和 ERPNext 查询在线程池执行，不阻塞事件循环。请求由 Pydantic 校验，错误不回显会话凭证。Agent 仍在宿主机运行，不加入 Docker Compose。
+Assistant 使用 FastAPI 提供 `/health` 和 `/conversations`，Uvicorn 运行 ASGI 服务。模型异步流式调用，ERPNext 查询在线程池执行。Frappe 校验登录态与 CSRF，并在同源接口转发 JSON/SSE；请求由 Pydantic 校验，错误不回显会话凭证。Agent 仍在宿主机运行，不加入 Docker Compose。
 
 使用 uv 管理 Python 3.13 和依赖，在 `assistant/` 中执行：
 
 ```bash
 uv sync
-uv run python server.py
+uv run python main.py
 ```
 
-`server.py` 自动读取同目录 `.env`，已有环境变量优先；未设置 `AGENT_HOST` 时读取 Docker bridge 网关并仅绑定该地址。无法确定网桥时明确报错，可手动设置容器可达的 `AGENT_HOST`。Frappe 通过 `PROCUREMENT_AGENT_URL`（默认 `http://host.docker.internal:8100`）访问 Agent，Agent 通过 `ERPNEXT_URL`（默认 `http://127.0.0.1:8000`）访问 ERPNext。
+`app/config/app_config.py` 参考 dataagent：先读取 `conf/.env`（不覆盖进程环境变量），再用 OmegaConf 加载 `conf/app_config.yaml` 并解析敏感字段的 `${oc.env:变量名}`，最后用 Pydantic 校验，拒绝未知字段和无效模型引用。配置在进程启动时加载一次，路径不依赖启动目录。`server.host` 为空时读取 Docker bridge 网关并仅绑定该地址。无法确定网桥时明确报错，可在 YAML 设置容器可达的 `server.host`。Frappe 通过 `PROCUREMENT_AGENT_URL`（默认 `http://host.docker.internal:8100`）访问 Agent，Agent 通过 YAML 的 `erpnext.base_url`（默认 `http://127.0.0.1:8000`）访问 ERPNext。
 
-修改代码或模型配置后重新运行服务，Ctrl+C 停止。远程 Docker 或 Docker Desktop 场景需按实际网络配置地址。Agent 未启动时 ERPNext 仍可使用，聊天提示服务不可用。
+模型配置沿用 dataagent 的 `lm_config.active` / `models` 结构，每项包含 `model_provider`、`api_protocol`、`model`、`base_url`、`api_key`、`params` 和 `profile`。已迁移 dataagent 的三个条目：`deepseek-deepseek-v4-flash`（默认，DeepSeek Responses）、`openrouter-deepseek-v4-flash` 和 `openrouter-glm-5.3-flash`（OpenRouter Chat Completions）。普通配置保持源项目的地址、模型名、参数和能力声明；凭据仅放在本地 `.env`。DeepSeek Responses 的思考内容会保留用于工具续轮，但公开消息和流式回复只展示正文。OpenAI 原生 Responses 与 Chat Completions 也可配置，协议不自动回退。能力字段按实际模型填写，未知上下文大小留 `null`。可定义多个具名模型，通过 `lm_config.active` 选择；`params` 配置模型附加参数，不得覆盖显式连接和协议设置。修改代码或配置后重新运行服务，Ctrl+C 停止。远程 Docker 或 Docker Desktop 场景需按实际网络配置地址。Agent 未启动时 ERPNext 仍可使用，聊天提示服务不可用。
 
 开发依赖包含 Pyright 和 Ruff，执行 `uv run pyright`、`uv run ruff check .`。Python 版本范围为 `>=3.13,<3.14`，提交 `uv.lock` 保持依赖一致。
+
+### 会话与 Agent 管理
+
+实现参考 `dataagent` 的运行管理、会话生命周期和模型工厂，精简为单采购 Agent：
+
+- `assistant/app/agent/model.py`：OpenAI 兼容模型配置，异步流式调用。
+- `assistant/app/agent/runtime.py`：LangGraph 模型节点与工具节点，只注册 `query_items`。
+- `assistant/app/services/conversations.py`：共享无用户凭据的编译图、会话运行互斥、取消和有界订阅队列；慢连接断开不会取消任务。
+- `assistant/app/repositories/conversations.py`：通过 SQLAlchemy 异步会话读写会话目录，按 ERPNext 站点和已核实用户隔离。
+- `assistant/main.py`：应用装配、启动和关闭，负责创建会话仓储；数据库基础设施不依赖业务仓储。
+- `assistant/app/config/app_config.py`：YAML 配置加载与类型校验。
+- `assistant/conf/app_config.yaml`：服务、PostgreSQL、ERPNext、模型集合及其调用参数。
+- `assistant/app/api/`：请求校验、会话接口及消息展示协议。
+- `assistant/app/database/postgres.py`：SQLAlchemy 异步引擎、官方 Checkpoint 连接池和进程锁。
+- `assistant/app/models/conversation.py`：SQLAlchemy 声明式会话模型及索引。
+- `assistant/app/integrations/erpnext.py`：ERPNext 身份验证和只读 API 客户端。
+- `assistant/app/agent/tools/items.py` 与 `prompts.py`：Item 工具定义、执行和采购提示词。
+
+`assistant/docker-compose.yml` 独立管理 PostgreSQL，Compose 项目名为 `procurement-assistant`，服务名为 `postgres`，使用 `postgres:17-alpine`，仅发布 `127.0.0.1:5433`，命名卷 `procurement-assistant_postgres-data` 保存会话目录和 LangGraph Checkpoint。它与 ERPNext 的 Compose 生命周期和 MariaDB 无关，不使用 Redis 保存历史。单独停止数据库使用 `docker compose --env-file assistant/conf/.env -f assistant/docker-compose.yml down`；不带 `-v` 会保留数据。数据库连接由 `langgraph_postgresql` 配置块管理，密码可通过 `conf/.env` 的 `ASSISTANT_PG_PASSWORD` 注入；如修改数据库密码，需与实际 PostgreSQL 凭据保持一致。
+
+启动时由 SQLAlchemy 模型元数据创建缺失的会话表和索引；LangGraph 表由官方 `AsyncPostgresSaver.setup()` 初始化。会话读写使用独立的 `AsyncSession`，写操作通过事务自动提交或回滚。SQLAlchemy 和 Checkpoint 使用各自的连接池，共用同一个 PostgreSQL 数据库和 psycopg 驱动。模型配置可以稍后补齐，但 PostgreSQL 必须可连接。运行凭据通过 LangGraph invocation context 注入，不进入消息、工具参数或 Checkpoint。模型和工具结果会持久化，删除会话会清理对应 Checkpoint。
+
+当前只支持单服务进程，启动时用 PostgreSQL advisory lock 拒绝同一数据库的第二个实例。运行任务及订阅队列在内存中，服务重启不会自动继续未完成的模型调用；已完成节点的消息和工具结果可以恢复。正在生成但尚未写入 Checkpoint 的文字在关闭面板后不重放，后续输出继续接收，完成后从 Checkpoint 重载完整回复。取消导致未完成的工具调用会在下一轮补齐中断结果，避免损坏模型消息序列。
+
+验证（在 `assistant/` 中）：
+
+```bash
+uv run ruff check .
+uv run pyright
+uv run python -m unittest discover -s tests -v
+```
+
+设置 `TEST_DATABASE_URL` 指向独立测试数据库可额外运行真实 PostgreSQL 集成测试，覆盖会话归属、工具调用、重启恢复和删除。测试模型不调用外部供应商；真实模型仍需配置后单独联调。
