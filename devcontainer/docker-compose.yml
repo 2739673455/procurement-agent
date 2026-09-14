@@ -74,6 +74,9 @@ services:
         condition: service_healthy
     environment:
       - SHELL=/bin/bash
+      - PROCUREMENT_AGENT_URL=http://host.docker.internal:8100
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ..:/workspace:cached
       # Enable if you require git cloning

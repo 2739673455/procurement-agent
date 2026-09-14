@@ -6,5 +6,5 @@ app_email = ""
 app_license = "MIT"
 required_apps = ["erpnext"]
 
-doctype_js = {"Material Request": "public/js/material_request.js"}
-app_include_css = ["/assets/procurement_assistant/css/assistant.css"]
+app_include_js = ["procurement_assistant.bundle.js"]
+app_include_css = ["procurement_assistant.bundle.css"]

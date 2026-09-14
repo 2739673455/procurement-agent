@@ -1,0 +1,60 @@
+.procurement-assistant-panel {
+    position: fixed;
+    top: 60px;
+    right: 0;
+    bottom: 96px;
+    width: min(420px, 100vw);
+    z-index: 1040;
+    overflow-y: auto;
+    padding: 24px;
+    background: var(--fg-color, white);
+    color: var(--text-color, #1f2937);
+    border-left: 1px solid var(--border-color, #ddd);
+    box-shadow: -4px 0 20px rgb(0 0 0 / 8%);
+    overflow-wrap: anywhere;
+}
+.procurement-assistant-panel header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 24px;
+}
+.procurement-assistant-panel h3 { margin: 0; }
+.procurement-assistant-panel li { margin-bottom: 12px; }
+
+.procurement-assistant-launcher {
+    position: fixed;
+    right: max(24px, env(safe-area-inset-right));
+    bottom: max(24px, env(safe-area-inset-bottom));
+    z-index: 1030;
+    display: grid;
+    place-items: center;
+    width: 56px;
+    height: 56px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: #1565d8;
+    color: #fff;
+    box-shadow: 0 4px 16px rgb(0 0 0 / 20%);
+    cursor: pointer;
+}
+.procurement-assistant-launcher[hidden] { display: none; }
+.procurement-assistant-launcher:hover { background: #104fae; }
+.procurement-assistant-launcher:focus-visible {
+    outline: 3px solid var(--text-color, #1f2937);
+    outline-offset: 4px;
+}
+
+.procurement-assistant-panel { display: flex; flex-direction: column; padding: 20px; }
+.procurement-assistant-panel header { flex-shrink: 0; margin-bottom: 12px; }
+.procurement-chat-context { color: var(--text-muted); font-size: 12px; }
+.procurement-chat-log { flex: 1; min-height: 0; overflow-y: auto; padding: 4px; }
+.procurement-chat-message { padding: 12px; margin: 10px 0; border-radius: 12px; background: var(--control-bg, #f2f4f7); }
+.procurement-chat-message.user { margin-left: 24px; background: var(--blue-50, #eaf3ff); color: var(--blue-900, #153e75); }
+.procurement-chat-message p { white-space: pre-wrap; margin: 6px 0 0; }
+.procurement-chat-status { font-size: 12px; margin: 8px 0; white-space: pre-wrap; }
+.procurement-chat-composer { flex-shrink: 0; }
+.procurement-chat-composer textarea { width: 100%; resize: vertical; max-height: 140px; border: 1px solid var(--border-color); border-radius: 8px; padding: 10px; background: var(--control-bg); color: var(--text-color); }
+.procurement-chat-composer > div { display: flex; justify-content: space-between; margin-top: 8px; }

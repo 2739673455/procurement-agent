@@ -1,0 +1,25 @@
+[project]
+name = "procurement-assistant"
+version = "0.1.0"
+description = "ERPNext procurement assistant service"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi>=0.141.1",
+    "python-dotenv>=1.2.3",
+    "uvicorn>=0.52.4",
+]
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.pyright]
+pythonVersion = "3.13"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "basic"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.414",
+    "ruff>=0.16.7",
+]

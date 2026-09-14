@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 cd /workspace/frappe_docker/development/frappe-bench
 app=procurement_assistant
-source_dir=/workspace/apps/$app
-if [[ ! -e apps/$app ]]; then
+source_dir=/workspace/frappe_app
+if [[ ! -e apps/$app && ! -L apps/$app ]]; then
     ln -s "$source_dir" "apps/$app"
 fi
 if [[ $(readlink -f "apps/$app") != "$source_dir" ]]; then

@@ -2,11 +2,11 @@
 
 本项目探索如何把 Agent 嵌入 ERPNext 的日常业务页面。用户处理单据时可以直接唤起助手，让它结合当前业务上下文查询、分析并给出建议。
 
-当前已纳入 Docker 开发配置和官方 frappe_docker 子模块，已安装首个采购助手入口 App，尚未接入 Agent 模型。面向其他项目的需求文档不作为本项目的实施规格。以下是讨论方案，不代表全部选型已确定。
+当前已纳入 Docker 开发配置和官方 frappe_docker 子模块，已实现 Buying 常驻对话面板、独立 Agent 服务和只读 Item 工具；真实模型需在本地配置。面向其他项目的需求文档不作为本项目的实施规格。以下是讨论方案，不代表全部选型已确定。
 
 ## 1. 想要的使用体验
 
-以采购需求为例：用户打开一张需求单，点击页面上的“采购助手”，右侧展开对话面板，直接问“哪些供应商符合这次需求？”
+以采购需求为例：用户打开一张需求单，点击页面右下角的采购助手悬浮图标，右侧展开对话面板，直接问“哪些供应商符合这次需求？”
 
 助手知道正在查看哪张单据、关注哪些明细。结果留在当前页面中，列出候选供应商、匹配依据和待确认问题，用户可以边看需求边追问，也可以打开来源记录核实。
 
@@ -54,8 +54,7 @@ flowchart LR
     F[ERPNext 业务表单] --> P[共用助手面板]
     P -->|当前会话下的请求| I[Frappe App 接入与授权]
     I --> A[Agent 服务]
-    A -->|受限工具请求| I
-    I --> D[ERPNext 业务数据与规则]
+    A -->|当前用户身份，原生只读 API| D[ERPNext 业务数据与规则]
     A --> R[分析结果与来源]
     R --> P
 ```
@@ -66,12 +65,14 @@ flowchart LR
 | ----------------- | ---------------------------------------------------------------- |
 | 页面适配          | 判断场景、读取当前单据定位信息和明细选择，提供快捷问题           |
 | 共用面板          | 展示上下文、对话、结果和任务状态，处理打开、关闭与切换           |
-| Frappe App 服务端 | 识别真实会话用户、检查访问权、读取正式数据、提供受控业务工具     |
+| Frappe App 服务端 | 验证当前登录用户，将聊天请求接入 Agent；仅按需补充原生 API 缺失能力 |
 | Agent 服务        | 理解问题、选择工具、组织分析和管理任务，不持有无限制业务访问权限 |
 
-浏览器经 Frappe 同源接口发起任务，由服务端建立绑定用户、站点和单据范围的任务授权。Agent 后续查询也必须验证该授权和当前业务权限，不能信任浏览器或模型自行填写的用户 ID。身份委托的具体协议需要单独设计和验证。
+浏览器通过 Frappe 同源接口 `procurement_assistant.api.chat` 发送问题。当前开发版只支持现有站点的浏览器登录会话：Frappe 服务端将会话凭证交给同机运行的 Agent，Agent 调用原生登录身份接口核实用户，并携同一会话调用 Item API。会话只在本轮请求内使用，不写日志、不传给模型、不在 Agent 中持久化。Agent 仅监听宿主机 Docker 网桥地址的 8100 端口，Frappe 通过 host.docker.internal 连接。
 
-耗时分析采用任务方式返回状态；首个原型可轮询，后续再决定流式输出方式。不要让页面的长时间等待阻断 ERPNext 原有操作。模型和服务凭证只保留在服务端。
+这是一种开发环境下的会话委托，凭证本身仍具有用户原有权限，尚未实现 OAuth 或细粒度短期授权。当前 Agent 只提供固定 Item 只读工具，不能自选站点、任意 API 或写动作。后续生产接入需设计正式的委托与撤销机制。
+
+当前聊天采用同步请求，一次只执行一个问题；工具调用和超时有上限。前端显示等待和失败状态，对话暂存于浏览器内存并按用户与页面隔离，刷新后清空，不代表已经实现持久任务或长期记忆。
 
 ## 4. 共用面板如何理解不同页面
 
@@ -142,16 +143,58 @@ cd /workspace/frappe_docker/development/frappe-bench
 `frappe_docker/development/frappe-bench/` 和初始化标记由上游忽略规则排除，数据库保存在 Docker 命名卷中，均不随主仓库同步。自己的 App 源码后续放在主仓库管理并配置挂载，不仅保存在被忽略的 Bench 目录中。官方子模块内不维护定制，开发配置统一提交到 `devcontainer/`。
 
 
-## 8. 采购助手 App 原型
+## 8. 对话助手与 Item 工具
 
-源码位于 `apps/procurement_assistant/`，由 Bench 中的软链接引用。自动启动脚本会注册本地 App、安装到站点、构建静态资源并清理缓存，因此其他设备初始化时也会安装该 App。
+- `frappe_app/`：Buying 内常驻的对话面板，以及 Frappe 登录会话接入接口。
+- `assistant/server.py`：独立 Agent HTTP 服务，使用支持 Chat Completions 函数工具调用的模型接口。
+- `query_items(query, offset=0, limit=10)`：Agent 侧工具，通过 ERPNext 原生 `GET /api/resource/Item` 查询，不重建查询业务接口。
 
-登录 ERPNext 后搜索 `Material Request`（物料需求），打开或新建单据，将用途设置为 `Purchase`（采购）。页面工具栏的“采购助手”按钮打开右侧面板，显示当前单据、公司和物料明细；勾选明细后重新打开可查看选择范围。未保存修改时提示先保存，切换页面会关闭面板。
+进入 Buying 任意页面，点击右下角图标发送“列出前 5 个物料”或“查询名称包含螺丝的 Item”。工具只返回当前用户有权访问的编码、名称、物料组、单位和停用状态，最多每页 20 条，明确是否还有下一页。含 `%`、`_` 或反斜杠的关键词按完整编码或名称精确查询，避免将编码中的通配符当作模糊匹配。
 
-目前是页面入口与上下文展示原型，不调用模型、不查询额外供应商数据，也不写入业务单据。面板中的文本通过安全文本节点渲染。手动重新安装或构建可执行：
+回复下方显示真实工具查询结果的物料链接。模型不能查询库存或价格，也不能创建、修改、提交单据。当前页面只用于前端标识和会话隔离，不自动读取单据正文；需要用户输入物料关键词或编码。
+
+支持连续追问、清空对话、Enter 发送和 Shift+Enter 换行。关闭面板后本轮请求继续，结果仍归属原页面；切换页面不会把旧响应显示在新页面。最近最多 20 条已完成消息用于后续推理，历史仅保存在当前浏览器内存。
+
+### 配置模型
+
+复制 `assistant/.env.example` 为 `assistant/.env`，填写：
+
+```dotenv
+LLM_BASE_URL=https://你的模型服务地址/v1
+LLM_MODEL=支持工具调用的模型名
+LLM_API_KEY=你的密钥
+```
+
+`assistant/.env` 已被 Git 忽略，不要提交密钥。也支持不需要密钥的本地兼容服务；Agent 在本机运行，可直接使用本机模型的 localhost 地址。
+
+在项目根目录执行：
+
+```bash
+docker compose -f devcontainer/docker-compose.yml up -d
+uv run --project assistant python assistant/server.py
+```
+
+未配置模型时服务仍可启动，发送消息会明确提示配置缺失，不会生成模拟 AI 结果。健康检查表示 HTTP 服务运行，不表示模型已可用。配置真实模型后，用户问题、最近对话和工具返回的 Item 字段会发往该模型服务，登录凭证不会发送。
+
+### 开发与验证
+
+App 由 Bench 软链接引用主仓库源码，启动时自动安装并构建。前端更新后可运行：
 
 ```bash
 docker compose -f devcontainer/docker-compose.yml exec -T frappe bash /workspace/devcontainer/install-app.sh
 ```
 
-新增 App 后首次刷新浏览器；若服务进程仍持有旧 App 缓存，重启 `frappe` 服务。后续供应商查询接口必须在服务端验证用户与数据权限。
+Assistant 使用 FastAPI 提供 `/health` 和 `/chat`，Uvicorn 运行 ASGI 服务；现有同步模型和 ERPNext 查询在线程池执行，不阻塞事件循环。请求由 Pydantic 校验，错误不回显会话凭证。Agent 仍在宿主机运行，不加入 Docker Compose。
+
+使用 uv 管理 Python 3.13 和依赖，在 `assistant/` 中执行：
+
+```bash
+uv sync
+uv run python server.py
+```
+
+`server.py` 自动读取同目录 `.env`，已有环境变量优先；未设置 `AGENT_HOST` 时读取 Docker bridge 网关并仅绑定该地址。无法确定网桥时明确报错，可手动设置容器可达的 `AGENT_HOST`。Frappe 通过 `PROCUREMENT_AGENT_URL`（默认 `http://host.docker.internal:8100`）访问 Agent，Agent 通过 `ERPNEXT_URL`（默认 `http://127.0.0.1:8000`）访问 ERPNext。
+
+修改代码或模型配置后重新运行服务，Ctrl+C 停止。远程 Docker 或 Docker Desktop 场景需按实际网络配置地址。Agent 未启动时 ERPNext 仍可使用，聊天提示服务不可用。
+
+开发依赖包含 Pyright 和 Ruff，执行 `uv run pyright`、`uv run ruff check .`。Python 版本范围为 `>=3.13,<3.14`，提交 `uv.lock` 保持依赖一致。
