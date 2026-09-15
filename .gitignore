@@ -2,8 +2,12 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 node_modules/
-frappe_app/procurement_assistant/public/dist/
+frappe_app/public/dist/
 .env
 
 .venv/
 .ruff_cache/
+
+assistant/logs/
+
+frappe_app/build/

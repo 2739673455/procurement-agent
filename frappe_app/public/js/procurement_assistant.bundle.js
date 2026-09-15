@@ -24,12 +24,31 @@
         return result;
     }
 
+    function pageSnapshot() {
+        const route = frappe.get_route();
+        const frm = window.cur_frm;
+        if (route[0] !== "Form" || !frm?.doc || route[1] !== frm.doctype || route[2] !== frm.doc.name) return {route};
+        function fields(doc) {
+            const result = {};
+            for (const field of frappe.get_meta(doc.doctype).fields) {
+                if (field.fieldtype === "Password" || doc[field.fieldname] === undefined) continue;
+                result[field.fieldname] = ["Table", "Table MultiSelect"].includes(field.fieldtype)
+                    ? (doc[field.fieldname] || []).map(fields) : doc[field.fieldname];
+            }
+            return result;
+        }
+        return {route, doctype: frm.doctype, name: frm.doc.name,
+            is_new: Boolean(frm.is_new()), is_dirty: Boolean(frm.is_dirty()), doc: fields(frm.doc)};
+    }
+
     async function show() {
         close();
         const version = generation;
         const storageKey = `procurement-conversation:${frappe.session.user}`;
         let current = localStorage.getItem(storageKey);
         let busy = false;
+        let uploading = false;
+        let attachments = [];
         const panel = document.createElement("aside");
         panel.id = key;
         panel.className = "procurement-assistant-panel";
@@ -53,7 +72,16 @@
         toolbar.className = "procurement-chat-toolbar";
         const context = document.createElement("p");
         context.className = "procurement-chat-context";
-        context.textContent = `当前页面：${frappe.get_route().join(" / ")}（未读取单据内容）`;
+        const includeContext = document.createElement("input");
+        includeContext.type = "checkbox";
+        includeContext.checked = true;
+        const contextLabel = document.createElement("label");
+        contextLabel.append(includeContext, " 随消息发送当前页面和表单内容");
+        function updateContext() {
+            const snapshot = pageSnapshot();
+            context.textContent = `当前页面：${snapshot.route.join(" / ")}${snapshot.doctype ? (snapshot.is_new ? "（新建，尚未保存）" : snapshot.is_dirty ? "（包含未保存修改）" : "（已保存）") : ""}`;
+        }
+        updateContext();
         const log = document.createElement("div");
         log.className = "procurement-chat-log";
         log.setAttribute("role", "log");
@@ -64,7 +92,6 @@
         form.className = "procurement-chat-composer";
         const input = document.createElement("textarea");
         input.rows = 3;
-        input.maxLength = 4000;
         input.placeholder = "例如：查询名称包含螺丝的物料";
         input.setAttribute("aria-label", "发送给采购助手的问题");
         const actions = document.createElement("div");
@@ -72,9 +99,54 @@
         const stop = button("停止生成", () => guard(async () => {
             await request("stop", {conversation_id: current});
         }));
-        actions.append(stop, send);
-        form.append(input, actions);
-        panel.append(header, select, toolbar, context, log, status, form);
+        const fileInput = document.createElement("input");
+        fileInput.type = "file";
+        fileInput.multiple = true;
+        fileInput.hidden = true;
+        const attach = button("上传附件", () => fileInput.click());
+        const attachmentList = document.createElement("div");
+        attachmentList.className = "procurement-chat-attachments";
+        const notice = document.createElement("small");
+        notice.textContent = "附件保存为私有文件；发送后，所选附件和勾选的表单内容会交给模型处理。";
+        actions.append(attach, stop, send);
+        form.append(input, attachmentList, fileInput, actions, notice);
+        panel.append(header, select, toolbar, contextLabel, context, log, status, form);
+        function renderAttachments() {
+            attachmentList.replaceChildren();
+            for (const file of attachments) {
+                attachmentList.append(button(`${file.file_name} ×`, () => {
+                    attachments = attachments.filter(item => item.name !== file.name);
+                    renderAttachments();
+                }));
+            }
+        }
+        fileInput.onchange = () => guard(async () => {
+            uploading = true;
+            setBusy(busy);
+            const selected = [...fileInput.files];
+            const selectedConversation = current;
+            try {
+                for (const file of selected) {
+                    status.textContent = `正在上传：${file.name}`;
+                    const body = new FormData();
+                    body.append("file", file);
+                    body.append("is_private", "1");
+                    const response = await fetch("/api/method/upload_file", {
+                        method: "POST", credentials: "same-origin",
+                        headers: {"X-Frappe-CSRF-Token": frappe.csrf_token}, body,
+                    });
+                    const result = await response.json();
+                    if (!response.ok || !result.message?.name) throw new Error(`附件上传失败：${file.name}`);
+                    if (!active() || current !== selectedConversation) return;
+                    attachments.push(result.message);
+                    renderAttachments();
+                }
+            } finally {
+                uploading = false;
+                fileInput.value = "";
+                if (active()) setBusy(busy);
+            }
+        });
         document.body.append(panel);
         document.getElementById(launcherKey)?.setAttribute("aria-expanded", "true");
 
@@ -85,7 +157,8 @@
         }
         function setBusy(value) {
             busy = value;
-            input.disabled = send.disabled = value || !current;
+            input.disabled = send.disabled = value || uploading || !current;
+            attach.disabled = value || uploading || !current;
             stop.disabled = !value;
             status.textContent = value ? "正在生成…" : "";
         }
@@ -101,7 +174,23 @@
             log.scrollTop = log.scrollHeight;
             return {el, text};
         }
+        function renderMessage(message) {
+            const {el} = bubble(message.role, message.content);
+            const details = [];
+            if (message.page_context) details.push(`页面：${message.page_context.route.join(" / ")}${message.page_context.is_new || message.page_context.is_dirty ? "（发送时未保存）" : ""}`);
+            for (const attachment of message.attachments || []) details.push(`附件：${attachment.name}`);
+            if (details.length) {
+                const meta = document.createElement("small");
+                meta.textContent = details.join("\n");
+                meta.style.whiteSpace = "pre-wrap";
+                el.append(meta);
+            }
+        }
         function toolResult(result) {
+            if (!result || !Array.isArray(result.items)) {
+                bubble("tool", typeof result === "string" ? result : result?.error || result?.content || JSON.stringify(result));
+                return;
+            }
             const {el} = bubble("tool", result.error || `返回 ${result.items?.length || 0} 条物料，起始位置 ${result.offset || 0}${result.has_more ? "，还有更多结果" : ""}`);
             for (const item of result.items || []) {
                 el.append(button(`${item.item_code || item.name} · ${item.item_name || "查看物料"}`, () => frappe.set_route("Form", "Item", item.name)));
@@ -136,19 +225,19 @@
             if (!active() || current !== id) return;
             for (const message of data.messages) {
                 if (message.role === "tool") toolResult(message.result);
-                else bubble(message.role, message.content);
+                else renderMessage(message);
             }
             setBusy(data.running);
             if (data.running) await stream("subscribe", id);
         }
-        async function stream(action, id, message) {
+        async function stream(action, id, message, extra = {}) {
             const controller = new AbortController();
             connection = controller;
             let errorText = "";
             let answer;
             let done = false;
             try {
-                const response = await request(action, {conversation_id: id, ...(message ? {message} : {})}, controller.signal);
+                const response = await request(action, {conversation_id: id, ...(message ? {message} : {}), ...extra}, controller.signal);
                 if (!(response instanceof Response)) throw new Error("未收到对话事件流。");
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
@@ -169,7 +258,7 @@
                             answer.text.textContent += event.delta;
                         } else if (event.type === "tool_start") {
                             answer = null;
-                            status.textContent = "正在查询物料…";
+                            status.textContent = `正在执行工具：${event.name}…`;
                         } else if (event.type === "tool_result") toolResult(event.result);
                         else if (event.type === "error") errorText = event.error;
                         else if (event.type === "stopped") errorText = "已停止生成。";
@@ -187,16 +276,19 @@
                         log.replaceChildren();
                         for (const item of data.messages) {
                             if (item.role === "tool") toolResult(item.result);
-                            else bubble(item.role, item.content);
+                            else renderMessage(item);
                         }
                         setBusy(data.running);
                         status.textContent = errorText || (data.running ? "任务仍在执行，请重新打开对话连接。" : "");
                     }
                 }
             }
+            return !errorText;
         }
         toolbar.append(
             button("新建", () => guard(async () => {
+                attachments = [];
+                renderAttachments();
                 const data = await request("create");
                 current = data.id;
                 await list(); await load();
@@ -211,11 +303,15 @@
             button("删除", () => guard(async () => {
                 if (!current || !window.confirm("删除此对话及其历史？正在执行的任务也会停止。")) return;
                 await request("delete", {conversation_id: current});
+                attachments = [];
+                renderAttachments();
                 current = null;
                 await list(); await load();
             })),
         );
         select.onchange = () => guard(async () => {
+            attachments = [];
+            renderAttachments();
             current = select.value;
             localStorage.setItem(storageKey, current);
             await load();
@@ -223,12 +319,23 @@
         form.onsubmit = event => {
             event.preventDefault();
             const message = input.value.trim();
-            if (!message || busy || !current) return;
+            if (!message || busy || uploading || !current) return;
+            updateContext();
+            const page_context = includeContext.checked ? pageSnapshot() : null;
+            const selectedAttachments = attachments;
             input.value = "";
-            bubble("user", message);
+            renderMessage({role: "user", content: message, page_context,
+                attachments: selectedAttachments.map(file => ({name: file.file_name}))});
             setBusy(true);
-            guard(() => stream("send", current, message));
+            guard(async () => {
+                const sent = await stream("send", current, message, {page_context, attachments: selectedAttachments.map(file => file.name)});
+                if (sent && active() && attachments === selectedAttachments) {
+                    attachments = [];
+                    renderAttachments();
+                }
+            });
         };
+        input.onfocus = updateContext;
         input.onkeydown = event => {
             if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
                 event.preventDefault(); form.requestSubmit();

@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.errors import AgentError
+from app.errors.agent import AgentError
 from app.models.conversation import Conversation
 
 
@@ -19,7 +19,6 @@ class ConversationRepository:
             select(Conversation.id, Conversation.title, Conversation.updated_at)
             .where(Conversation.site == owner[0], Conversation.username == owner[1])
             .order_by(Conversation.updated_at.desc())
-            .limit(100)
         )
         async with self.sessions() as session:
             rows = await session.execute(statement)

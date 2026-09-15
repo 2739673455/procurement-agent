@@ -8,9 +8,9 @@ from langchain_openai import ChatOpenAI
 from langchain_openrouter import ChatOpenRouter
 from pydantic import SecretStr
 
-from app.agent.responses import DeepSeekResponsesModel, ResponsesModel
+from app.clients.model_responses import DeepSeekResponsesModel, ResponsesModel
 from app.config import app_config
-from app.errors import AgentError
+from app.errors.agent import AgentError
 
 
 def create_model(model_name: str) -> BaseChatModel:
@@ -37,7 +37,6 @@ def create_model(model_name: str) -> BaseChatModel:
                 and settings.profile.image_inputs,
             },
         ),
-        "max_retries": 0,
         "streaming": True,
     }
     if settings.api_protocol == "responses":

@@ -1,0 +1,89 @@
+"""PostgreSQL 客户端管理。"""
+
+from collections.abc import AsyncIterator
+
+from sqlalchemy import URL
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.orm import DeclarativeBase
+
+from app.config.app_config import PostgresConfig
+
+
+class PostgresClientManager:
+    """PostgreSQL 客户端管理器。"""
+
+    def __init__(
+        self,
+        db_config: PostgresConfig,
+        base: type[DeclarativeBase],
+    ) -> None:
+        """初始化 PostgreSQL 客户端管理器。"""
+        self._db_config = db_config
+        self._base = base
+        self._engine: AsyncEngine | None = None
+        self._session_maker: async_sessionmaker[AsyncSession] | None = None
+
+    @property
+    def _url(self) -> URL:
+        """获取异步数据库连接 URL。"""
+        return URL.create(
+            drivername="postgresql+psycopg",
+            username=self._db_config.user,
+            password=self._db_config.password.get_secret_value(),
+            host=self._db_config.host,
+            port=self._db_config.port,
+            database=self._db_config.database,
+        )
+
+    def init(self) -> None:
+        """初始化数据库引擎和会话工厂。"""
+        self._engine = create_async_engine(
+            self._url,
+            echo=False,
+            hide_parameters=True,
+            pool_size=5,
+            max_overflow=0,
+            pool_pre_ping=True,
+            pool_recycle=1800,
+            pool_timeout=30,
+        )
+        self._session_maker = async_sessionmaker(
+            self._engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+
+    @property
+    def session_maker(self) -> async_sessionmaker[AsyncSession]:
+        """获取数据库会话工厂。"""
+        if self._session_maker is None:
+            raise RuntimeError("PostgreSQL 客户端管理器尚未初始化")
+        return self._session_maker
+
+    def session(self) -> AsyncSession:
+        """创建数据库会话。"""
+        return self.session_maker()
+
+    async def get_session(self) -> AsyncIterator[AsyncSession]:
+        """获取 FastAPI 请求级数据库会话。"""
+        async with self.session() as db_session:
+            yield db_session
+
+    async def close(self) -> None:
+        """关闭数据库引擎并释放资源。"""
+        if self._engine is not None:
+            await self._engine.dispose()
+        self._engine = None
+        self._session_maker = None
+
+    async def init_tables(self) -> None:
+        """根据当前 ORM 模型创建尚未存在的数据表。"""
+        if self._engine is None:
+            raise RuntimeError("PostgreSQL 客户端管理器尚未初始化")
+        async with self._engine.begin() as connection:
+            await connection.run_sync(self._base.metadata.create_all)

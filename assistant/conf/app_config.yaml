@@ -1,35 +1,47 @@
+# 日志输出配置。
+log:
+  level: INFO # 日志级别。
+  rotation: 10 MB # 单个日志文件的滚动大小。
+
+# Assistant HTTP 服务配置。
 server:
   host: "" # 留空时自动检测 Docker 网桥网关。
-  port: 8100
+  port: 8100 # HTTP 服务监听端口。
 
 # 会话目录和 LangGraph 检查点共用这个独立数据库。
 langgraph_postgresql:
-  host: "127.0.0.1"
-  port: 5433
-  user: "atguigu"
-  password: ${oc.env:ASSISTANT_PG_PASSWORD}
-  database: "procurement_assistant"
+  host: "127.0.0.1" # 数据库主机地址。
+  port: 5433 # 数据库连接端口。
+  user: "atguigu" # 数据库用户名。
+  password: ${oc.env:ASSISTANT_PG_PASSWORD} # 从环境变量读取数据库密码。
+  database: "procurement_assistant" # 数据库名称。
 
+# ERPNext 接口和站点配置。
 erpnext:
-  base_url: "http://127.0.0.1:8000"
-  site: "development.localhost"
-  timeout_seconds: 5
+  base_url: "http://127.0.0.1:8000" # ERPNext 接口地址。
+  site: "development.localhost" # ERPNext 站点名称。
+  timeout_seconds: 5 # ERPNext 请求超时，单位为秒。
 
+# 模型选择及各模型的连接参数和能力配置。
 lm_config:
-  active: deepseek-deepseek-v4-flash
+  active: deepseek-deepseek-v4-flash # 当前使用的模型配置名，对应 models 中的条目。
+  # 可选模型配置集合。
   models:
+    # DeepSeek 官方接口的模型配置。
     deepseek-deepseek-v4-flash:
-      model_provider: deepseek
-      api_protocol: responses
-      model: deepseek-v4-flash
-      base_url: https://api.deepseek.com
-      api_key: ${oc.env:DEEPSEEK_API_KEY,""}
-      params: {}
+      model_provider: deepseek # 模型服务商，决定使用的适配器。
+      api_protocol: responses # 模型接口协议。
+      model: deepseek-v4-flash # 服务商提供的模型标识。
+      base_url: https://api.deepseek.com # 模型接口地址。
+      api_key: ${oc.env:DEEPSEEK_API_KEY,""} # 从环境变量读取密钥，未配置时为空。
+      params: {} # 附加模型调用参数。
+      # 模型能力声明。
       profile:
-        image_inputs: false
-        structured_output: false
-        max_input_tokens: 1048576
-      timeout_seconds: 30
+        image_inputs: false # 是否支持图片输入。
+        structured_output: false # 是否支持结构化输出。
+        max_input_tokens: 1048576 # 最大输入 token 数，未知时可设为 null。
+      timeout_seconds: 30 # 模型请求超时，单位为秒。
+    # 通过 OpenRouter 调用 DeepSeek 的模型配置。
     openrouter-deepseek-v4-flash:
       model_provider: openrouter
       api_protocol: chat_completions
@@ -42,6 +54,7 @@ lm_config:
         structured_output: true
         max_input_tokens: 1048576
       timeout_seconds: 30
+    # 通过 OpenRouter 调用 GLM 的模型配置。
     openrouter-glm-5.3-flash:
       model_provider: openrouter
       api_protocol: chat_completions
@@ -49,8 +62,9 @@ lm_config:
       base_url: https://openrouter.ai/api/v1
       api_key: ${oc.env:OPENROUTER_API_KEY,""}
       params:
+        # 推理参数。
         reasoning:
-          effort: high
+          effort: high # 推理强度。
       profile:
         image_inputs: true
         structured_output: false

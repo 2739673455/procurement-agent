@@ -1,49 +1,72 @@
 """应用组件装配与本地服务启动入口。"""
 
 import subprocess
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from loguru import logger
 
 from app.api.conversations import router
+from app.clients.langgraph_postgres_manager import LangGraphPostgresManager
+from app.clients.postgres_client_manager import PostgresClientManager
 from app.config import app_config
-from app.database.postgres import open_postgres
-from app.errors import AgentError
+from app.errors.base import ProblemDetails
+from app.errors.exc_handlers import register_exception_handlers
 from app.models.conversation import Conversation
+from app.observability.log import setup_logger
+from app.observability.trace import TraceMiddleware
 from app.repositories.conversations import ConversationRepository
-from app.services.conversations import AgentManager
+from app.services.conversations import ConversationService
+from app.services.runs import AgentRunService
 
 
 @asynccontextmanager
 async def lifespan(app):
-    async with open_postgres(app_config.cfg.langgraph_postgresql) as (engine, saver):
-        async with engine.begin() as connection:
-            await connection.run_sync(Conversation.metadata.create_all)
-        sessions = async_sessionmaker(engine, expire_on_commit=False)
-        repository = ConversationRepository(sessions)
-        manager = AgentManager(saver, repository)
-        app.state.manager = manager
+    logger.info("开始初始化应用资源")
+    async with AsyncExitStack() as stack:
+        postgres = PostgresClientManager(
+            app_config.cfg.langgraph_postgresql, Conversation
+        )
+        stack.push_async_callback(postgres.close)
+        postgres.init()
+        await postgres.init_tables()
+
+        persistence = LangGraphPostgresManager(app_config.cfg.langgraph_postgresql)
+        stack.push_async_callback(persistence.close)
+        await persistence.init()
+
+        repository = ConversationRepository(postgres.session_maker)
+        runs = AgentRunService(persistence.get_checkpointer(), repository)
+        stack.push_async_callback(runs.close)
+        app.state.conversations = ConversationService(repository, runs)
+        logger.info("应用资源初始化完成")
         try:
             yield
         finally:
-            await manager.close()
+            logger.info("开始释放应用资源")
+    logger.info("应用资源释放完成")
+    await logger.complete()
 
 
-app = FastAPI(title="Procurement Assistant", lifespan=lifespan)
+setup_logger()
+app = FastAPI(
+    title="Procurement Assistant",
+    lifespan=lifespan,
+    responses={
+        "default": {
+            "model": ProblemDetails,
+            "content": {
+                "application/problem+json": {
+                    "schema": {"$ref": "#/components/schemas/ProblemDetails"}
+                }
+            },
+        }
+    },
+)
 app.include_router(router)
-
-
-@app.exception_handler(AgentError)
-async def agent_error(_request, exc):
-    return JSONResponse({"error": str(exc)}, status_code=exc.status)
-
-
-@app.exception_handler(Exception)
-async def unexpected_error(_request, _exc):
-    return JSONResponse({"error": "助手服务发生错误，请稍后重试。"}, status_code=500)
+app.add_middleware(TraceMiddleware)
+register_exception_handlers(app)
 
 
 def listen_host(host: str) -> str:

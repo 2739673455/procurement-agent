@@ -59,3 +59,6 @@
 .procurement-chat-composer textarea { width: 100%; resize: vertical; max-height: 140px; border: 1px solid var(--border-color); border-radius: 8px; padding: 10px; background: var(--control-bg); color: var(--text-color); }
 .procurement-chat-composer > div { display: flex; justify-content: space-between; margin-top: 8px; }
 .procurement-chat-toolbar { display: flex; gap: 8px; margin: 8px 0; flex-shrink: 0; }
+
+.procurement-chat-attachments { display: flex; flex-wrap: wrap; gap: 6px; }
+.procurement-chat-composer small { display: block; margin-top: 8px; color: var(--text-muted); }

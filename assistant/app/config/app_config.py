@@ -16,6 +16,13 @@ class ConfigModel(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
 
+class LogConfig(ConfigModel):
+    """日志级别和滚动配置。"""
+
+    level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    rotation: str = "10 MB"
+
+
 class ServerConfig(ConfigModel):
     host: str
     port: int = Field(ge=1, le=65535)
@@ -44,7 +51,7 @@ class ModelProfileConfig(ConfigModel):
 
 
 class ModelConfig(ConfigModel):
-    model_provider: Literal["openai", "deepseek", "openrouter"]
+    model_provider: str = Field(min_length=1)
     api_protocol: Literal["chat_completions", "responses"]
     profile: ModelProfileConfig
     # 模型名称和接口地址可留空，便于在配置模型服务前先启动应用。
@@ -68,20 +75,12 @@ class ModelConfig(ConfigModel):
             "openai_api_key",
             "timeout",
             "request_timeout",
-            "max_retries",
             "streaming",
             "use_responses_api",
             "use_previous_response_id",
             "output_version",
             "store",
         }
-        if self.api_protocol == "responses" and self.model_provider not in {
-            "deepseek",
-            "openai",
-        }:
-            raise ValueError("Responses API 仅支持 deepseek 或 openai")
-        if self.model_provider == "deepseek" and self.api_protocol != "responses":
-            raise ValueError("当前 DeepSeek 适配器使用 Responses API")
         conflicts = reserved & self.params.keys()
         if conflicts:
             raise ValueError(
@@ -102,6 +101,7 @@ class LanguageModelsConfig(ConfigModel):
 
 
 class AppConfig(ConfigModel):
+    log: LogConfig
     server: ServerConfig
     langgraph_postgresql: PostgresConfig
     erpnext: ERPNextConfig
