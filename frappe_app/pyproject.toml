@@ -1,8 +1,8 @@
 [project]
-name = "procurement_assistant"
+name = "buying_ai"
 version = "0.1.0"
-description = "Contextual procurement assistant for ERPNext"
-authors = [{name = "Procurement Agent"}]
+description = "Buying AI assistant for ERPNext"
+authors = [{name = "Buying AI"}]
 requires-python = ">=3.14"
 dependencies = []
 
@@ -11,14 +11,14 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["procurement_assistant"]
+packages = ["buying_ai"]
 include-package-data = false
 
 [tool.setuptools.package-dir]
-procurement_assistant = "."
+buying_ai = "."
 
 [tool.setuptools.package-data]
-procurement_assistant = ["modules.txt", "patches.txt", "public/js/*.js", "public/css/*.css"]
+buying_ai = ["modules.txt", "patches.txt", "package.json", "package-lock.json", "tsconfig.json", "public/frontend/*.ts", "public/frontend/*.tsx", "public/frontend/components/*.tsx", "public/frontend/*.css"]
 
 [tool.bench.frappe-dependencies]
 frappe = ">=16.0.0,<17.0.0"

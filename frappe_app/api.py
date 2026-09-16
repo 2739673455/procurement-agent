@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 
 import frappe
-from procurement_assistant.context import attachment_payloads, page_snapshot
+from buying_ai.context import attachment_payloads, page_snapshot
 from werkzeug.wrappers import Response
 
 
@@ -50,7 +50,7 @@ def conversations(
         payload["attachments"] = attachment_payloads(attachments)
     data = json.dumps(payload).encode()
     # 从环境变量读取 Assistant 服务地址。
-    base = os.environ["PROCUREMENT_AGENT_URL"].rstrip("/")
+    base = os.environ["BUYING_AI_AGENT_URL"].rstrip("/")
     # 为本次代理请求生成关联标识，同时传给 Assistant 和浏览器，便于查日志。
     trace_id = str(uuid4())
     frappe.local.response_headers["X-Trace-ID"] = trace_id

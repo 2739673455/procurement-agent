@@ -1,0 +1,143 @@
+/* 使用 Desk 的主题变量，随 ERPNext 明暗主题切换。 */
+.buying-ai-panel {
+    position: fixed;
+    top: calc(var(--navbar-height, 48px) + 12px);
+    right: 16px;
+    bottom: 88px;
+    width: min(440px, calc(100vw - 32px));
+    z-index: 1040;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 16px;
+    background: var(--fg-color);
+    color: var(--text-color);
+    border: none;
+    border-radius: var(--border-radius-lg, 12px);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.28), 0 2px 8px rgba(0, 0, 0, 0.16);
+    font-family: inherit;
+    font-size: var(--text-base, 14px);
+    overflow-wrap: anywhere;
+}
+
+.buying-ai-panel header {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    gap: 12px;
+    padding-bottom: 12px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.buying-ai-chat-context-toggle { display: flex; align-items: center; gap: 6px; margin: 0; font-size: var(--text-sm, 13px); flex-shrink: 0; }
+.buying-ai-chat-context-toggle input { margin: 0; flex-shrink: 0; }
+.buying-ai-chat-log { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 4px; }
+
+.buying-ai-chat-message {
+    padding: 12px;
+    margin: 0 0 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-md, 8px);
+    background: var(--fg-color);
+}
+
+.buying-ai-chat-message.user { margin-left: 24px; background: var(--control-bg); border-color: transparent; }
+.buying-ai-chat-message.tool { background: var(--subtle-fg, var(--control-bg)); font-size: var(--text-sm, 13px); }
+.buying-ai-chat-message strong { color: var(--text-muted); font-size: var(--text-xs, 12px); font-weight: 500; }
+.buying-ai-chat-message p { white-space: pre-wrap; line-height: 1.6; margin: 6px 0 0; }
+.buying-ai-chat-message .btn { margin: 8px 6px 0 0; max-width: 100%; white-space: normal; text-align: left; }
+.buying-ai-chat-message-meta { display: block; margin-top: 8px; white-space: pre-wrap; color: var(--text-muted); }
+.buying-ai-chat-status { font-size: var(--text-xs, 12px); color: var(--text-muted); margin: 4px 0 8px; white-space: pre-wrap; flex-shrink: 0; }
+.buying-ai-chat-status:empty { margin: 0; }
+.buying-ai-chat-composer { flex-shrink: 0; border-top: 1px solid var(--border-color); padding-top: 12px; }
+.buying-ai-chat-composer textarea { width: 100%; resize: vertical; min-height: 76px; max-height: 140px; line-height: 1.5; }
+.buying-ai-chat-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.buying-ai-chat-actions .btn-primary { margin-left: auto; }
+.buying-ai-chat-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; max-height: 80px; overflow-y: auto; }
+.buying-ai-chat-attachments:empty { display: none; }
+.buying-ai-chat-attachments .btn { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+
+.buying-ai-launcher {
+    position: fixed;
+    right: max(20px, env(safe-area-inset-right));
+    bottom: max(20px, env(safe-area-inset-bottom));
+    z-index: 1030;
+    display: grid;
+    place-items: center;
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    border-radius: var(--border-radius-lg, 12px);
+    box-shadow: var(--shadow-md);
+}
+
+.buying-ai-launcher[hidden] { display: none; }
+.buying-ai-launcher:focus-visible { outline: 2px solid var(--text-color); outline-offset: 3px; }
+
+@media (max-width: 576px), (max-height: 640px) {
+    .buying-ai-panel {
+        top: var(--navbar-height, 48px);
+        right: 0;
+        bottom: 0;
+        width: 100%;
+        border-radius: 0;
+        padding-bottom: max(12px, env(safe-area-inset-bottom));
+    }
+    .buying-ai-chat-composer textarea { min-height: 56px; max-height: 96px; }
+}
+
+.buying-ai-chat-send { flex-shrink: 0; }
+
+.buying-ai-chat-history-row { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; }
+.buying-ai-chat-history-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+.buying-ai-chat-history-title[aria-current="true"] { font-weight: 600; background: var(--fg-hover-color); }
+.buying-ai-chat-empty { padding: 48px 12px; text-align: center; color: var(--text-muted); }
+.buying-ai-chat-error {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    margin: 0 0 12px;
+    border-radius: var(--border-radius-md, 8px);
+    background: var(--control-bg);
+    color: var(--text-muted);
+    font-size: var(--text-sm, 13px);
+    line-height: 1.5;
+}
+.buying-ai-chat-error p { flex: 1; min-width: 0; margin: 0; }
+.buying-ai-chat-error .btn { flex-shrink: 0; margin: 0; }
+
+.buying-ai-chat-title { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; padding: 0; background: transparent; text-align: left; font-size: var(--text-lg, 18px); font-weight: 600; }
+.buying-ai-chat-title > span:first-child { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.buying-ai-chat-chevron { display: flex; align-items: center; justify-content: center; align-self: center; flex-shrink: 0; width: 18px; height: 18px; line-height: 1; transition: transform 0.15s; }
+.buying-ai-chat-title[aria-expanded="true"] .buying-ai-chat-chevron { transform: rotate(180deg); }
+.buying-ai-chat-history {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 1;
+    max-height: min(360px, 50vh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 12px;
+    background: var(--fg-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-lg, 12px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+.buying-ai-chat-create { display: block; width: 100%; margin-top: 16px; padding: 12px; }
+
+.buying-ai-chat-errors { flex-shrink: 0; max-height: 30%; overflow-y: auto; }
+.buying-ai-chat-errors:empty { display: none; }
+
+.buying-ai-chat-picker { position: relative; flex: 1; min-width: 0; }
+.buying-ai-chat-picker .buying-ai-chat-title { width: 100%; }
+.buying-ai-chat-picker.is-open { background: var(--control-bg); border-radius: var(--border-radius-lg, 12px) var(--border-radius-lg, 12px) 0 0; }
+.buying-ai-chat-picker.is-open .buying-ai-chat-title { background: transparent; border-radius: var(--border-radius-lg, 12px) var(--border-radius-lg, 12px) 0 0; }
+.buying-ai-chat-picker .buying-ai-chat-title:focus:not(:focus-visible) { box-shadow: none; outline: none; }
+.buying-ai-chat-picker .buying-ai-chat-title:focus-visible { outline: 2px solid var(--text-muted); outline-offset: -2px; box-shadow: none; }
+.buying-ai-chat-picker .buying-ai-chat-history { background: var(--control-bg); border: none; border-top: 1px solid var(--border-color); border-radius: 0 0 var(--border-radius-lg, 12px) var(--border-radius-lg, 12px); }
