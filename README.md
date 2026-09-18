@@ -81,7 +81,7 @@ Markdown 渲染、工具执行卡片和操作确认等交互也计划后续扩�
 
 ## 本地开发
 
-在仓库根目录启动 ERPNext：
+在仓库根目录通过统一的 `frappe_app/docker/compose.yaml` 启动 ERPNext 和 Assistant 所需的 PostgreSQL：
 
 ```bash
 git submodule update --init --recursive
@@ -97,12 +97,11 @@ docker compose -f frappe_app/docker/compose.yaml logs -f frappe
 
 配置并启动 Assistant：
 
-1. 首次将 `assistant/conf/.env.example` 复制为 `assistant/conf/.env`，填写所用模型密钥和数据库密码；数据库凭据需与 `assistant/docker-compose.yml` 一致。
+1. 首次将 `assistant/conf/.env.example` 复制为 `assistant/conf/.env`，填写所用模型密钥和数据库密码；数据库凭据需与 `frappe_app/docker/compose.yaml` 中的 `postgres` 服务一致。
 2. 在 `assistant/conf/app_config.yaml` 中选择模型，确认 ERPNext、数据库和服务地址。
 3. 在仓库根目录执行：
 
 ```bash
-docker compose -f assistant/docker-compose.yml up -d
 uv sync --directory assistant --locked
 uv run --directory assistant python main.py
 ```

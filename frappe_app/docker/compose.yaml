@@ -1,6 +1,22 @@
-name: erpnext-dev
+name: procurement-agent
 
 services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: procurement_assistant
+      POSTGRES_USER: atguigu
+      POSTGRES_PASSWORD: 123123
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   mariadb:
     image: docker.io/mariadb:11.8
     command:
@@ -107,5 +123,6 @@ services:
   #     - ../../frappe_docker/development:/workspace/frappe_docker/development
   #   network_mode: "host"
 volumes:
+  postgres-data:
   mariadb-data:
   #mailpit-data:
