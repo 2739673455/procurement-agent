@@ -1,13 +1,14 @@
-import { useConversation } from "../useConversation";
+import { useSession } from "../useSession";
 import { Composer } from "./Composer";
-import { ConversationMenu } from "./ConversationMenu";
+import { SessionMenu } from "./SessionMenu";
 import { MessageList } from "./MessageList";
 
+/** 组织会话菜单、消息、状态与输入区，关闭操作由父组件处理。 */
 export function AssistantPanel({ onClose }: { onClose(): void }) {
-    const chat = useConversation();
+    const chat = useSession();
     return <aside id="buying_ai_panel" className="buying-ai-panel" aria-label="采购助手对话">
         <header>
-            <ConversationMenu conversations={chat.conversations} current={chat.current} pending={chat.pending}
+            <SessionMenu sessions={chat.sessions} current={chat.current} pending={chat.pending}
                 onRefresh={chat.refresh} onSelect={chat.select} onCreate={chat.create} onDelete={chat.remove} />
             <button type="button" className="btn btn-default btn-sm" onClick={onClose}>关闭</button>
         </header>

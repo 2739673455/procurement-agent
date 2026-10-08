@@ -18,6 +18,7 @@ IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 
 
 def user_message(text, page_context, attachments):
+    """将问题、表单快照和附件转换为模型消息，单独保存聊天展示元数据。"""
     blocks: list[TextBlock | DataBlock] = [TextBlock(text=text)]
     if page_context is not None:
         blocks.append(
@@ -33,7 +34,7 @@ def user_message(text, page_context, attachments):
             raise AgentError(f"附件 {attachment.name} 内容无效。") from None
         if attachment.media_type in IMAGE_TYPES:
             model = app_config.cfg.lm_config.models[app_config.cfg.lm_config.active]
-            if not model.profile.image_inputs:
+            if not model.image_inputs:
                 raise AgentError(
                     f"当前模型不支持图片输入，无法读取 {attachment.name}。请切换支持图片的模型。"
                 )

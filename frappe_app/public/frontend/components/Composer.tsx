@@ -1,20 +1,27 @@
 import { useRef, useState } from "react";
 import type { Attachment } from "../types";
+/** 输入区状态和发送、停止、上传、移除附件的回调。 */
 interface Props {
     busy: boolean;
     disabled: boolean;
     uploading: boolean;
     attachments: Attachment[];
+    /** 发送正文及页面携带选项，返回本轮是否成功完成。 */
     onSend(text: string, context: boolean): Promise<boolean>;
+    /** 停止当前运行。 */
     onStop(): Promise<void>;
+    /** 上传选择的文件并加入待发送附件列表。 */
     onUpload(files: File[]): Promise<void>;
+    /** 按文件记录 ID 从待发送列表移除附件。 */
     onRemove(name: string): void;
 }
+/** 管理问题草稿、页面携带选项和附件，发送未成功时恢复草稿。 */
 export function Composer(props: Props) {
     const [text, setText] = useState("");
     const [includeContext, setIncludeContext] = useState(true);
     const fileInput = useRef<HTMLInputElement>(null);
     const disabled = props.disabled || props.busy || props.uploading;
+    /** 提交有效草稿，并按发送结果决定是否恢复输入内容。 */
     function submit() {
         if (disabled || !text.trim()) return;
         const draft = text;

@@ -26,9 +26,11 @@ class TraceMiddleware:
     """使用原生 ASGI 中间件，避免缓冲流式响应。"""
 
     def __init__(self, app: ASGIApp):
+        """保存需要追踪的下游 ASGI 应用。"""
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """设置请求追踪上下文，在完整响应结束后记录耗时并恢复上下文。"""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -52,6 +54,7 @@ class TraceMiddleware:
         begin = monotonic()
 
         async def traced_send(message: Message) -> None:
+            """在响应开始时添加关联标识，并原样转发 ASGI 消息。"""
             nonlocal started, status
             if message["type"] == "http.response.start":
                 started = True

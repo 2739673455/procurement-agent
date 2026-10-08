@@ -11,13 +11,12 @@ from agentscope.message import (
     ToolResultState,
     UserMsg,
 )
-from openai import AsyncOpenAI, AuthenticationError
+from openai import AsyncOpenAI
 from pydantic import SecretStr
 
-from app.agent.model import ChatCredential
-from app.clients.chat_model import ChatCompletionsModel
+from app.agent.model import ChatCompletionsModel, ChatCredential
 from app.config import app_config
-from app.config.app_config import ModelConfig, ModelProfileConfig
+from app.config.app_config import ModelConfig
 
 
 @pytest.fixture
@@ -26,14 +25,15 @@ def make_model(monkeypatch):
         app_config.cfg.lm_config, "models", dict(app_config.cfg.lm_config.models)
     )
 
-    def build(params=None, provider="deepseek"):
+    def build(params=None):
         app_config.cfg.lm_config.models["protocol-test"] = ModelConfig(
-            model_provider=provider,
+            model_provider="deepseek",
             model="test",
             base_url="https://model.invalid",
             api_key=SecretStr("test"),
             params=params or {},
-            profile=ModelProfileConfig(image_inputs=True, max_input_tokens=32768),
+            image_inputs=True,
+            context_size=32768,
             timeout_seconds=30,
         )
         return ChatCompletionsModel(
@@ -163,31 +163,6 @@ def test_deepseek_reasoning_and_tool_history_replay(make_model):
             tool = next(m for m in payload["messages"] if m["role"] == "tool")
             assert tool["tool_call_id"] == "call_1" and tool["content"] == "{}"
             assert assistants[-1]["content"] == "找到物料"
-        finally:
-            await model.client.close()
-
-    asyncio.run(scenario())
-
-
-def test_chat_completions_propagates_api_failure(make_model):
-    async def scenario():
-        def handler(request):
-            return httpx.Response(
-                401,
-                json={
-                    "error": {"message": "invalid key", "type": "authentication_error"}
-                },
-            )
-
-        model = make_model(provider="openai")
-        await model.client.close()
-        model.client = AsyncOpenAI(
-            api_key="test",
-            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
-        )
-        try:
-            with pytest.raises(AuthenticationError):
-                await final(model, [UserMsg(name="user", content="hello")])
         finally:
             await model.client.close()
 

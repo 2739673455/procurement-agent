@@ -13,6 +13,7 @@ EVENTS = TypeAdapter(AgentEvent)
 
 
 async def session_events(runtime, user_id, identifier, task):
+    """回放并订阅运行事件，补齐持久化终态；结束订阅只释放订阅资源。"""
     if task is None:
         yield {"type": "done"}
         return
@@ -27,6 +28,7 @@ async def session_events(runtime, user_id, identifier, task):
     failed = False
 
     def project(payload):
+        """转换原生事件并记录运行终态，向界面输出可展示的事件。"""
         nonlocal stopped, failed
         event = EVENTS.validate_python(
             {key: value for key, value in payload.items() if key != "_entry_id"}

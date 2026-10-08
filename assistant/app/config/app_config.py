@@ -50,48 +50,27 @@ class ERPNextConfig(ConfigModel):
     timeout_seconds: float = Field(gt=0)  # 请求超时，单位为秒，必须大于零。
 
 
-class ModelProfileConfig(ConfigModel):
-    """声明模型能力，未知的上下文大小显式填写 null。"""
+class DockerWorkspaceConfig(ConfigModel):
+    """AgentScope Docker 工作空间的镜像与空闲回收配置。"""
 
-    image_inputs: bool  # 是否允许向模型发送图片附件。
-    max_input_tokens: int | None = Field(gt=0)  # 上下文 token 预算；null 时使用 32768。
+    base_image: str = Field(min_length=1)  # 基础镜像，须提供 python3。
+    node_version: str = Field(min_length=1)  # 镜像内 Node.js 的主版本。
+    extra_pip: list[str]  # 安装到容器内的额外 Python 包，无需额外包时填写 []。
+    ttl_seconds: float = Field(gt=0)  # 工作空间空闲回收时长，单位为秒。
+    sweep_interval_seconds: float = Field(gt=0)  # 空闲回收扫描间隔，单位为秒。
 
 
 class ModelConfig(ConfigModel):
     """单个模型的服务商、连接参数和能力声明。"""
 
     model_provider: str = Field(min_length=1)  # 服务商标识，决定消息格式化方式。
-    profile: ModelProfileConfig  # 图片输入和上下文预算的能力声明。
     model: str = Field(min_length=1)  # 服务商的模型标识，不可为空。
     base_url: str = Field(min_length=1)  # 模型接口根地址，不可为空。
     api_key: SecretStr = Field(min_length=1)  # 从环境变量读取的模型密钥，不可为空。
     timeout_seconds: float = Field(gt=0)  # 模型请求超时，单位为秒。
+    image_inputs: bool  # 是否允许向模型发送图片附件。
+    context_size: int | None = Field(gt=0)  # 上下文 token 预算；null 时使用 32768。
     params: dict[str, Any]  # 透传到模型请求体的附加参数，无附加参数时填写 {}。
-
-    @model_validator(mode="after")
-    def validate_params(self) -> Self:
-        """禁止附加参数覆盖连接配置和框架管理的请求字段。"""
-
-        reserved = {
-            "model",
-            "model_name",
-            "model_provider",
-            "profile",
-            "base_url",
-            "api_key",
-            "timeout",
-            "stream",
-            "messages",
-            "tools",
-            "tool_choice",
-            "store",
-        }
-        conflicts = reserved & self.params.keys()
-        if conflicts:
-            raise ValueError(
-                "params 不能覆盖模型配置字段: " + ", ".join(sorted(conflicts))
-            )
-        return self
 
 
 class LanguageModelsConfig(ConfigModel):
@@ -116,6 +95,7 @@ class AppConfig(ConfigModel):
     server: ServerConfig  # HTTP 服务配置。
     postgresql: PostgresConfig  # AgentScope 持久化连接配置。
     erpnext: ERPNextConfig  # ERPNext 连接与站点配置。
+    workspace: DockerWorkspaceConfig  # 按用户分配的 Docker 执行工作空间。
     lm_config: LanguageModelsConfig  # 模型集合及启用配置。
 
 

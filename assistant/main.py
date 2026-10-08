@@ -10,17 +10,18 @@ from loguru import logger
 from sqlalchemy import URL
 
 from app.agent.runtime import create_runtime
-from app.api.conversations import router
+from app.api.sessions import router
 from app.config import app_config
 from app.errors.base import ProblemDetails
 from app.errors.exc_handlers import register_exception_handlers
 from app.observability.log import setup_logger
 from app.observability.trace import TraceMiddleware
-from app.services.conversations import ConversationService
+from app.services.sessions import SessionService
 
 
 @asynccontextmanager
 async def lifespan(app):
+    """初始化 SQL 存储和框架运行服务，并由框架生命周期管理资源释放。"""
     logger.info("开始初始化应用资源")
     settings = app_config.cfg.postgresql
     url = URL.create(
@@ -38,7 +39,7 @@ async def lifespan(app):
         )
     )
     async with runtime.router.lifespan_context(runtime):
-        app.state.conversations = ConversationService(runtime.state)
+        app.state.sessions = SessionService(runtime.state)
         logger.info("应用资源初始化完成")
         yield
     logger.info("应用资源释放完成")
@@ -66,6 +67,7 @@ register_exception_handlers(app)
 
 
 def listen_host(host: str) -> str:
+    """使用显式监听地址；为空时读取 Docker 默认网桥网关地址。"""
     if host:
         return host
     result = subprocess.run(

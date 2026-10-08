@@ -18,7 +18,7 @@ def _stream_response(upstream):
         with upstream:
             yield from upstream
     except (OSError, ValueError, HTTPException):
-        # 流已经开始，无法再改 HTTP 响应，改用 SSE 错误事件通知页面。
+        # 流式响应期间通过 SSE 错误事件通知页面，HTTP 响应头不可修改。
         yield (
             "data: "
             + json.dumps({"type": "error", "error": "连接中断，请重新打开对话。"})
@@ -28,9 +28,9 @@ def _stream_response(upstream):
 
 # 将函数开放为 Frappe POST 接口，默认不允许访客调用。
 @frappe.whitelist(methods=["POST"])
-def conversations(
+def sessions(
     action,
-    conversation_id=None,
+    session_id=None,
     message="",
     title="",
     page_context=None,
@@ -40,7 +40,7 @@ def conversations(
     # 转发当前登录会话，供 Assistant 验证身份。
     payload = {
         "action": action,
-        "conversation_id": conversation_id,
+        "session_id": session_id,
         "message": message,
         "title": title,
         "sid": frappe.session.sid,
@@ -55,7 +55,7 @@ def conversations(
     trace_id = str(uuid4())
     frappe.local.response_headers["X-Trace-ID"] = trace_id
     request = Request(
-        base + "/conversations",
+        base + "/sessions",
         data=data,
         headers={"Content-Type": "application/json", "X-Trace-ID": trace_id},
     )

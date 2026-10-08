@@ -8,9 +8,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from app.api.dependencies import AuthenticatedUser, authenticate, conversation_service
-from app.contracts.conversations import Command
-from app.services.conversations import ConversationService
+from app.api.dependencies import AuthenticatedUser, authenticate, session_service
+from app.contracts.sessions import Command
+from app.services.sessions import SessionService
 
 router = APIRouter()
 SSE_HEARTBEAT_SECONDS = 10
@@ -43,12 +43,13 @@ async def encode_sse(events):
             await events.aclose()
 
 
-@router.post("/conversations")
-async def conversations(
+@router.post("/sessions")
+async def sessions(
     command: Command,
     user: Annotated[AuthenticatedUser, Depends(authenticate)],
-    service: Annotated[ConversationService, Depends(conversation_service)],
+    service: Annotated[SessionService, Depends(session_service)],
 ):
+    """分发已认证的会话操作；发送和订阅返回 SSE，其余操作返回 JSON。"""
     result = await service.execute(command, user.owner, user.erp)
     if command.action in ("send", "subscribe"):
         return StreamingResponse(

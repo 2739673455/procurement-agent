@@ -9,7 +9,7 @@ server:
   port: 8100 # HTTP 服务监听端口。
 
 # AgentScope 原生 SQL 存储：会话、AgentState、完整消息及模型配置引用。
-# 框架启动时创建缺失的数据表；密钥仍从 .env 读取。
+# 框架启动时创建缺失的数据表；密钥从环境变量读取，支持通过 .env 配置。
 postgresql:
   host: "127.0.0.1" # 数据库主机地址。
   port: 5433 # 数据库连接端口。
@@ -23,6 +23,14 @@ erpnext:
   site: "development.localhost" # ERPNext 站点名称。
   timeout_seconds: 5 # ERPNext 请求超时，单位为秒。
 
+# AgentScope Docker 工作空间：每个用户一个容器，会话默认目录为 /workspace/sessions/<session_id>/work/。
+workspace:
+  base_image: python:3.13-slim # 提供 python3 的基础镜像；框架自动构建并缓存工具镜像。
+  node_version: "22" # 容器内 Node.js 的主版本，用于运行 Node.js 工具和 MCP 服务。
+  extra_pip: [] # 预装到容器内的额外 Python 包，例如 pandas、pypdf。
+  ttl_seconds: 3600 # 工作空间空闲多久后回收容器，单位为秒；保留挂载的工作文件。
+  sweep_interval_seconds: 300 # 框架扫描空闲工作空间的间隔，单位为秒。
+
 # 模型选择及各模型的连接参数和能力配置。
 lm_config:
   active: deepseek-deepseek-flash # 当前使用的模型配置名，对应 models 中的条目。
@@ -35,8 +43,6 @@ lm_config:
       base_url: https://api.deepseek.com # 模型接口地址。
       api_key: ${oc.env:DEEPSEEK_API_KEY} # 从环境变量读取必填的模型密钥。
       timeout_seconds: 30 # 模型请求超时，单位为秒。
-      params: {} # 附加模型调用参数。
-      # 模型能力声明。
-      profile:
-        image_inputs: true # 是否支持图片输入。
-        max_input_tokens: 1048576 # 最大输入 token 数，未知时可设为 null。
+      image_inputs: true # 是否支持图片输入。
+      context_size: 1048576 # AgentScope 上下文 token 预算；null 时使用 32768。
+      params: {} # 透传到 Chat Completions 请求体的附加参数，例如 thinking、reasoning_effort、max_tokens。

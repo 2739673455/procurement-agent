@@ -6,19 +6,23 @@ from unittest.mock import AsyncMock
 
 import pytest
 from agentscope.app.storage import AsyncSQLAlchemyStorage
+from agentscope.app.workspace_manager import IsolationPolicy, LocalWorkspaceManager
 from agentscope.credential import OpenAICredential
 from agentscope.formatter import OpenAIChatFormatter
 from agentscope.model import ChatModelBase, ChatResponse
 from pydantic import SecretStr
 
 from app.agent.runtime import create_runtime
-from app.contracts.conversations import Command
+from app.contracts.sessions import Command
 from app.errors.agent import AgentError
-from app.services.conversations import ConversationService
+from app.services.sessions import SessionService
 
 
 class Model(ChatModelBase):
+    """模拟框架模型，提供预设回复或等待取消，记录输入与客户端释放。"""
+
     def __init__(self, calls, entered=None):
+        """设置预设回复；entered 用于通知测试模型已进入可取消的等待阶段。"""
         super().__init__(
             OpenAICredential(api_key=SecretStr("test")),
             "test",
@@ -35,6 +39,7 @@ class Model(ChatModelBase):
     async def _call_api(
         self, model_name, messages, tools=None, tool_choice=None, **kwargs
     ):
+        """记录消息和工具，按测试配置等待取消或返回预设回复。"""
         self.inputs.append(deepcopy(messages))
         self.tools = tools
         if self.entered:
@@ -58,10 +63,12 @@ def response(text=None, tool=False):
 async def service_at(path):
     app = create_runtime(
         AsyncSQLAlchemyStorage(f"sqlite+aiosqlite:///{path / 'state.db'}"),
-        workspace_dir=path / "workspaces",
+        workspace_manager=LocalWorkspaceManager(
+            str(path / "workspaces"), isolation=IsolationPolicy.PER_USER
+        ),
     )
     async with app.router.lifespan_context(app):
-        yield ConversationService(app.state)
+        yield SessionService(app.state)
 
 
 async def command(
@@ -74,9 +81,7 @@ async def command(
     **kwargs,
 ):
     return await service.execute(
-        Command(
-            sid=SecretStr("test"), action=action, conversation_id=identifier, **kwargs
-        ),
+        Command(sid=SecretStr("test"), action=action, session_id=identifier, **kwargs),
         owner,
         erp,
     )
@@ -128,7 +133,7 @@ def test_tool_history_restored_and_credentials_bound(monkeypatch, tmp_path):
             user_id, _ = service.identity(("site", "owner"))
             credentials = await service.storage.list_credentials(user_id)
             assert "api_key" not in str([record.data for record in credentials])
-            assert "bash" not in str(first.tools).lower()
+            assert "bash" in str(first.tools).lower()
             assert "query_items" in str(first.tools)
             first.client.close.assert_awaited_once()
         async with service_at(tmp_path) as service:
@@ -201,7 +206,7 @@ def test_owner_isolation_delete_and_disconnect(monkeypatch, tmp_path):
             collector = asyncio.create_task(collect(subscribed))
             await command(service, "delete", identifier)
             assert (await collector)[-1] == {"type": "done"}
-            assert (await command(service, "list"))["conversations"] == []
+            assert (await command(service, "list"))["sessions"] == []
             user_id, agent_id = service.identity(("site", "owner"))
             assert (
                 await service.storage.get_session(user_id, agent_id, identifier) is None
@@ -218,7 +223,7 @@ def test_native_model_factory_resolves_server_reference(tmp_path):
     async def scenario():
         from agentscope.app._service import get_model
 
-        from app.clients.chat_model import ChatCompletionsModel
+        from app.agent.model import ChatCompletionsModel
 
         async with service_at(tmp_path) as service:
             identifier = (await command(service, "create"))["id"]

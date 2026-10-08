@@ -7,7 +7,7 @@ import frappe
 
 
 def page_snapshot(value):
-    """校验单据访问权限，保留表单业务字段；快照仍是用户提交的数据。"""
+    """校验单据访问权限并过滤表单字段；快照内容由用户提交。"""
     if not value:
         return None
     page = frappe.parse_json(value)
@@ -30,6 +30,7 @@ def page_snapshot(value):
     levels = document.get_permlevel_access("read")
 
     def fields(doctype, data):
+        """按字段访问级别过滤业务数据，并递归整理子表。"""
         output = {}
         for df in frappe.get_meta(doctype).fields:
             if (

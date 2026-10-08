@@ -16,6 +16,8 @@ from app.errors.agent import AgentError
 
 
 def create_items_tool(erp: ERPNext) -> FunctionTool:
+    """创建只读物料查询工具，erp 为已绑定用户登录身份的客户端。"""
+
     async def query_items(
         query: str,
         offset: Annotated[int, Field(ge=0)] = 0,

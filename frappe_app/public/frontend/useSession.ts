@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { api, events, upload, type Turn } from "./api";
 import { frappe, pageSnapshot } from "./frappe";
-import type { Attachment, Conversation, Message, PageContext } from "./types";
+import type { Attachment, Session, Message, PageContext } from "./types";
 
 /** 管理会话状态；关闭或切换时中止订阅，不停止服务端正在执行的任务。 */
-export function useConversation() {
-    const storageKey = `buying-ai-conversation:${frappe.session.user}`;
-    const [conversations, setConversations] = useState<Conversation[]>([]);
+export function useSession() {
+    const storageKey = `buying-ai-session:${frappe.session.user}`;
+    const [sessions, setSessions] = useState<Session[]>([]);
     const [current, setCurrent] = useState<string | null>(null);
     const [messages, setMessages] = useState<Message[]>([]);
     const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -23,21 +23,25 @@ export function useConversation() {
     const sending = useRef(false);
     const listVersion = useRef(0);
 
+    /** 展示未取消请求的错误，忽略主动中止带来的错误。 */
     function report(cause: unknown, signal: AbortSignal) {
         if (!signal.aborted) setError(cause instanceof Error ? cause.message : "请求失败。");
     }
+    /** 同步当前会话引用、界面状态和按登录用户区分的本地选择。 */
     function remember(id: string | null) {
         currentRef.current = id;
         setCurrent(id);
         if (id) localStorage.setItem(storageKey, id);
         else localStorage.removeItem(storageKey);
     }
+    /** 刷新会话列表，避免较早发出的请求覆盖较新的响应。 */
     async function list(signal: AbortSignal) {
         const version = ++listVersion.current;
         const data = await api.list(signal);
-        if (!signal.aborted && version === listVersion.current) setConversations(data.conversations);
-        return data.conversations;
+        if (!signal.aborted && version === listVersion.current) setSessions(data.sessions);
+        return data.sessions;
     }
+    /** 发送或订阅一轮事件，结束时读取持久化消息并返回执行结果。 */
     async function stream(id: string, signal: AbortSignal, turn?: Turn) {
         let done = false;
         let failure = "";
@@ -80,7 +84,7 @@ export function useConversation() {
                         setMessages(history.messages);
                         setBusy(history.running);
                         setStatus(stopped ? "已停止生成。" : "");
-                        if (history.running) failure ||= "任务仍在执行，请重试以恢复连接。";
+                        if (history.running) failure ||= "任务正在执行，请重试以恢复连接。";
                     }
                 } catch (cause) {
                     if (!signal.aborted) {
@@ -93,6 +97,7 @@ export function useConversation() {
         }
         return !signal.aborted && done && !failure && !stopped;
     }
+    /** 中止当前订阅并切换会话，运行中的会话自动订阅事件。 */
     async function load(id: string | null) {
         view.current.abort();
         const controller = new AbortController();
@@ -118,11 +123,13 @@ export function useConversation() {
         } catch (cause) { report(cause, signal); }
         finally { if (!signal.aborted) setLoading(false); }
     }
+    /** 刷新会话菜单，错误展示到面板。 */
     async function refresh() {
         const signal = lifetime.current.signal;
         try { await list(signal); }
         catch (cause) { report(cause, signal); }
     }
+    /** 恢复选中会话和订阅，同一会话保留未发送附件。 */
     async function retry() {
         const signal = view.current.signal;
         setLoading(true);
@@ -140,6 +147,7 @@ export function useConversation() {
         } catch (cause) { report(cause, signal); }
         finally { if (!signal.aborted) setLoading(false); }
     }
+    /** 协调会话创建和删除操作，阻止操作期间的重复提交。 */
     async function mutate(action: (signal: AbortSignal) => Promise<void>) {
         if (mutation.current) return;
         mutation.current = true;
@@ -149,6 +157,7 @@ export function useConversation() {
         catch (cause) { report(cause, signal); }
         finally { mutation.current = false; if (!signal.aborted) setPending(false); }
     }
+    /** 创建并选中新会话，随后刷新会话列表。 */
     async function create() {
         await mutate(async signal => {
             const row = await api.create(signal);
@@ -157,6 +166,7 @@ export function useConversation() {
             await list(signal);
         });
     }
+    /** 确认后删除会话，删除当前会话时选择剩余会话。 */
     async function remove(id: string) {
         if (!window.confirm("删除此会话及其历史？正在执行的任务也会停止。")) return;
         await mutate(async signal => {
@@ -168,6 +178,7 @@ export function useConversation() {
             if (!signal.aborted && wasCurrent) void load(rows[0]?.id || null);
         });
     }
+    /** 携带可选表单快照和附件发送问题，成功完成后清空待发送附件。 */
     async function send(text: string, includeContext: boolean) {
         const id = currentRef.current;
         if (!id || busy || loading || uploading || sending.current || !text.trim()) return false;
@@ -185,12 +196,14 @@ export function useConversation() {
         if (success) setAttachments([]);
         return success;
     }
+    /** 请求服务端停止当前会话运行，终态由事件订阅更新。 */
     async function stop() {
         const signal = view.current.signal;
         if (!currentRef.current) return;
         try { await api.stop(currentRef.current, signal); }
         catch (cause) { report(cause, signal); }
     }
+    /** 依次上传文件并更新上传状态和待发送附件列表。 */
     async function uploadFiles(files: File[]) {
         const signal = view.current.signal;
         setUploading(true);
@@ -209,9 +222,10 @@ export function useConversation() {
         view.current = new AbortController();
         void retry();
         return () => { lifetime.current.abort(); view.current.abort(); };
-        // 面板挂载时恢复一次；后续动作通过当前会话引用执行。
+        // 面板挂载时恢复会话；用户操作通过当前会话引用执行。
     }, []);
-    return { conversations, current, messages, attachments, busy, loading, uploading, pending, status, error,
+    return { sessions, current, messages, attachments, busy, loading, uploading, pending, status, error,
         select: load, refresh, retry, create, remove, send, stop, uploadFiles,
+        /** 按记录 ID 移除待发送附件，不删除站点文件。 */
         removeAttachment: (name: string) => setAttachments(previous => previous.filter(file => file.name !== name)) };
 }

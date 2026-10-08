@@ -8,6 +8,7 @@ export function App() {
     const [open, setOpen] = useState(false);
     useEffect(() => {
         let timer: ReturnType<typeof setTimeout>;
+        /** 等待侧栏更新后同步 Buying 页面状态，并在离开时关闭面板。 */
         function sync() {
             clearTimeout(timer);
             // sidebar_title 在 Frappe 派发事件之后才更新。
@@ -17,6 +18,7 @@ export function App() {
                 if (!buying) setOpen(false);
             }, 0);
         }
+        /** 路由切换时关闭面板并重新判断挂载范围。 */
         function routeChanged() { setOpen(false); sync(); }
         const events = "sidebar_setup.buying_ai page-change.buying_ai form-refresh.buying_ai";
         frappe.router.on("change", routeChanged);

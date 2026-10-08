@@ -18,6 +18,7 @@ from agentscope.message import (
 
 
 def tool_result(block: ToolResultBlock):
+    """提取工具结果中的文本，解析 JSON 或返回普通文本展示结构。"""
     text = (
         block.output
         if isinstance(block.output, str)
@@ -32,6 +33,7 @@ def tool_result(block: ToolResultBlock):
 
 
 def public_messages(messages: list[Msg]):
+    """将框架消息转换为聊天记录，输出用户正文、回复文本和工具结果。"""
     output = []
     for message in messages:
         if message.role == "user":
@@ -67,11 +69,15 @@ def public_messages(messages: list[Msg]):
 
 
 class StreamProjection:
+    """累积框架回复事件，将文本增量和工具结果转换为界面事件。"""
+
     def __init__(self, history: list[Msg]):
+        """使用 history 保存累积的回复消息，并初始化当前回复。"""
         self.history = history
         self.reply: Msg | None = None
 
     def convert(self, event):
+        """更新当前回复并产出界面事件，思考内容不对外展示。"""
         if isinstance(event, ReplyStartEvent):
             self.reply = AssistantMsg(name=event.name, id=event.reply_id, content=[])
             self.history.append(self.reply)

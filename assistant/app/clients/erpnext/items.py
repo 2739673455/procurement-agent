@@ -9,6 +9,7 @@ FIELDS = ["name", "item_code", "item_name", "item_group", "stock_uom", "disabled
 
 
 def query_items(client: ERPNext, args):
+    """校验关键词和分页参数，按用户权限查询物料并标记是否有下一页。"""
     if not isinstance(args, dict) or set(args) - {"query", "offset", "limit"}:
         raise AgentError("Item 查询参数无效。")
     query, offset, limit = (
@@ -28,7 +29,7 @@ def query_items(client: ERPNext, args):
     }
     if query.strip():
         if any(c in query for c in ("%", "_", "\\")):
-            # 编码包含 SQL LIKE 通配符时，改用精确查询。
+            # 查询词包含 SQL LIKE 通配符时使用精确匹配。
             op, value = "=", query.strip()
         else:
             op, value = "like", "%" + query.strip() + "%"

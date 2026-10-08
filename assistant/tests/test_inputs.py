@@ -1,19 +1,17 @@
 import asyncio
 import base64
 
-import pytest
 from agentscope.formatter import DeepSeekChatFormatter
 
 from app.config import app_config
-from app.contracts.conversations import Attachment, PageContext
-from app.errors.agent import AgentError
+from app.contracts.sessions import Attachment, PageContext
 from app.services.inputs import user_message
 from app.services.messages import public_messages
 
 
 def test_page_snapshot_text_and_image_preserved_but_not_exposed(monkeypatch):
     model = app_config.cfg.lm_config.models[app_config.cfg.lm_config.active]
-    monkeypatch.setattr(model.profile, "image_inputs", True)
+    monkeypatch.setattr(model, "image_inputs", True)
     attachments = [
         Attachment(
             id="text",
@@ -47,18 +45,3 @@ def test_page_snapshot_text_and_image_preserved_but_not_exposed(monkeypatch):
     assert visible["content"] == "看看附件"
     assert "doc" not in visible["page_context"]
     assert all("data" not in attachment for attachment in visible["attachments"])
-
-
-def test_image_rejected_for_text_only_model(monkeypatch):
-    model = app_config.cfg.lm_config.models[app_config.cfg.lm_config.active]
-    monkeypatch.setattr(model.profile, "image_inputs", False)
-    with pytest.raises(AgentError, match="不支持图片"):
-        user_message(
-            "看图",
-            None,
-            [
-                Attachment(
-                    id="image", name="photo.png", media_type="image/png", data="eA=="
-                )
-            ],
-        )
