@@ -5,9 +5,8 @@ import binascii
 import json
 from io import BytesIO
 from pathlib import Path
-from typing import Any
 
-from langchain_core.messages import HumanMessage
+from agentscope.message import Base64Source, DataBlock, TextBlock, UserMsg
 from pypdf import PdfReader
 from pypdf.errors import PyPdfError
 
@@ -19,14 +18,13 @@ IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 
 
 def user_message(text, page_context, attachments):
-    blocks: list[str | dict[str, Any]] = [{"type": "text", "text": text}]
+    blocks: list[TextBlock | DataBlock] = [TextBlock(text=text)]
     if page_context is not None:
         blocks.append(
-            {
-                "type": "text",
-                "text": "用户当前页面及表单快照（可能尚未保存）：\n"
-                + json.dumps(page_context.model_dump(), ensure_ascii=False),
-            }
+            TextBlock(
+                text="用户当前页面及表单快照（可能尚未保存）：\n"
+                + json.dumps(page_context.model_dump(), ensure_ascii=False)
+            )
         )
     for attachment in attachments:
         try:
@@ -40,11 +38,12 @@ def user_message(text, page_context, attachments):
                     f"当前模型不支持图片输入，无法读取 {attachment.name}。请切换支持图片的模型。"
                 )
             blocks.append(
-                {
-                    "type": "image",
-                    "base64": attachment.data,
-                    "mime_type": attachment.media_type,
-                }
+                DataBlock(
+                    name=attachment.name,
+                    source=Base64Source(
+                        data=attachment.data, media_type=attachment.media_type
+                    ),
+                )
             )
             continue
         if Path(attachment.name).suffix.lower() == ".pdf":
@@ -74,12 +73,11 @@ def user_message(text, page_context, attachments):
             extracted = (
                 "附件已上传，但当前没有此文件类型的内容解析器，不能推断文件内容。"
             )
-        blocks.append(
-            {"type": "text", "text": f"用户附件 {attachment.name}：\n{extracted}"}
-        )
-    return HumanMessage(
+        blocks.append(TextBlock(text=f"用户附件 {attachment.name}：\n{extracted}"))
+    return UserMsg(
+        name="user",
         content=blocks,
-        additional_kwargs={
+        metadata={
             "display_text": text,
             "page_context": page_context.model_dump(exclude={"doc"})
             if page_context

@@ -48,7 +48,7 @@ export function useConversation() {
                 if (signal.aborted) return;
                 switch (event.type) {
                     case "delta": {
-                        answerId ||= event.message_id || crypto.randomUUID();
+                        answerId = event.message_id || answerId || crypto.randomUUID();
                         const key = answerId;
                         setMessages(previous => previous.some(message => message.id === key)
                             ? previous.map(message => message.id === key ? { ...message, content: message.content + event.delta } : message)

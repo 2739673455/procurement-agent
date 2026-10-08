@@ -1,4 +1,4 @@
-/** 与会话接口共享的数据结构，工具结果保持开放以支持后续工具。 */
+/** 与会话接口共享的数据结构，工具结果使用可扩展字段。 */
 export interface Conversation { id: string; title: string }
 export interface PageContext {
     route: string[];

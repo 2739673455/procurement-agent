@@ -11,3 +11,5 @@ frappe_app/public/dist/
 assistant/logs/
 
 frappe_app/build/
+
+assistant/data/

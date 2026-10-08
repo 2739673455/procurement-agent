@@ -4,15 +4,19 @@
 
 ## 项目组成
 
-| 目录 | 职责 |
-| --- | --- |
-| `frappe_app/` | Frappe App，内部名称为 `buying_ai`。提供助手界面、ERPNext 登录身份衔接、页面上下文和请求转发。 |
-| `assistant/` | 独立的 Agent 服务，运行在宿主机。负责身份核实、会话管理、模型与工具调用。 |
-| `frappe_docker/` | 官方 Docker 仓库子模块，提供 Frappe / ERPNext 开发环境基础。 |
+| 目录             | 职责                                                                                           |
+| ---------------- | ---------------------------------------------------------------------------------------------- |
+| `frappe_app/`    | Frappe App，内部名称为 `buying_ai`。提供助手界面、ERPNext 登录身份衔接、页面上下文和请求转发。 |
+| `assistant/`     | 独立的 Agent 服务，运行在宿主机。负责身份核实、会话管理、模型与工具调用。                      |
+| `frappe_docker/` | 官方 Docker 仓库子模块，提供 Frappe / ERPNext 开发环境基础。                                   |
 
 前端使用 React + TypeScript，源码位于 `frappe_app/public/frontend/`；Bench 负责构建和监听，`public/dist/` 是不提交 Git 的构建产物。Python 包通过可编辑安装映射为 `buying_ai`，无需在源码目录中再嵌套同名包。
 
-Assistant 使用 Python 3.13、uv、FastAPI 和 Deep Agents。会话目录通过 SQLAlchemy 存储，LangGraph Checkpoint 使用独立 PostgreSQL；该数据库属于 Assistant，不属于 ERPNext 业务系统。模型参数在 `assistant/conf/app_config.yaml` 配置，密钥和密码放在本地 `.env`。
+Assistant 使用 Python 3.13、uv、FastAPI 和 AgentScope 2。框架的 `ChatService` 负责 Agent 装配、推理循环、工具调用、消息与状态保存；`SessionService` 负责运行状态、取消和删除联动；`ChatRunRegistry` 与消息总线负责后台任务、会话互斥和事件分发。`AsyncSQLAlchemyStorage` 使用 `assistant/conf/app_config.yaml` 的 `postgresql` 连接，直接维护框架的会话、消息和状态表，启动时创建缺失的数据表。
+
+应用层保留 ERPNext 登录核验、站点／用户身份映射、物料工具、页面及附件输入和聊天展示协议。每轮通过框架工具工厂绑定当前用户的 ERPNext 客户端，登录凭据不写入状态或消息总线。模型通过框架凭据工厂装配，数据库仅保存配置引用；模型密钥仍在本地 `.env`。模型参数在 `assistant/conf/app_config.yaml` 配置，统一使用 Chat Completions。
+
+当前使用框架的 `InMemoryMessageBus`，以单 worker 启动。关闭页面只结束订阅，后台任务继续执行；服务重启后可加载已保存的对话继续提问，不会自动续跑中断任务。框架工作目录位于 `assistant/data/workspaces/`，按会话分配，不提交 Git。采购 Agent 只开放物料查询，未开放框架管理路由、Bash、文件、团队或定时任务工具。
 
 ## 当前已经实现
 
@@ -104,6 +108,15 @@ docker compose -f frappe_app/docker/compose.yaml logs -f frappe
 ```bash
 uv sync --directory assistant --locked
 uv run --directory assistant python main.py
+```
+
+运行回归测试和静态检查（测试使用模拟模型与隔离 SQLite，不调用真实模型或 ERPNext）：
+
+```bash
+uv run --directory assistant python -m pytest -q
+uv run --directory assistant ruff check app main.py tests
+uv run --directory assistant pyright
+npm --prefix frappe_app run typecheck
 ```
 
 Frappe 通过 Compose 中的 `BUYING_AI_AGENT_URL` 访问宿主机 Assistant。Assistant 默认端口为 `8100`，通过配置的 ERPNext 地址核实用户并查询业务数据。真实模型能力需要配置后联调；助手服务不可用不影响 ERPNext 本身使用。

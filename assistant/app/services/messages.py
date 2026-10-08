@@ -1,104 +1,100 @@
-"""将持久化的图消息转换为对外聊天协议。"""
+"""AgentScope 消息与前端聊天事件之间的投影；思考内容不对外展示。"""
 
 import json
 
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
+from agentscope.event import (
+    ReplyStartEvent,
+    TextBlockDeltaEvent,
+    ToolResultEndEvent,
+    ToolResultStartEvent,
+)
+from agentscope.message import (
+    AssistantMsg,
+    Msg,
+    TextBlock,
+    ToolResultBlock,
+    ToolResultState,
+)
 
 
-def public_messages(messages):
+def tool_result(block: ToolResultBlock):
+    text = (
+        block.output
+        if isinstance(block.output, str)
+        else "\n".join(
+            item.text for item in block.output if isinstance(item, TextBlock)
+        )
+    )
+    try:
+        return json.loads(text)
+    except ValueError:
+        return {"content": text}
+
+
+def public_messages(messages: list[Msg]):
     output = []
     for message in messages:
-        if isinstance(message, (HumanMessage, AIMessage)) and message.text:
+        if message.role == "user":
+            metadata = message.metadata or {}
             output.append(
                 {
                     "id": message.id,
-                    "role": "user"
-                    if isinstance(message, HumanMessage)
-                    else "assistant",
-                    "content": message.additional_kwargs.get(
-                        "display_text", message.text
-                    ),
-                    "page_context": message.additional_kwargs.get("page_context"),
-                    "attachments": message.additional_kwargs.get("attachments", []),
+                    "role": "user",
+                    "content": metadata.get("display_text", message.get_text_content()),
+                    "page_context": metadata.get("page_context"),
+                    "attachments": metadata.get("attachments", []),
                 }
             )
-        elif isinstance(message, ToolMessage):
-            try:
-                result = json.loads(str(message.content))
-            except ValueError:
-                result = {"content": message.text}
-            output.append(
-                {
-                    "id": message.id,
-                    "role": "tool",
-                    "content": message.name or "工具结果",
-                    "result": result,
-                }
-            )
+        elif message.role == "assistant":
+            for block in message.content:
+                if isinstance(block, TextBlock) and block.text:
+                    output.append(
+                        {"id": block.id, "role": "assistant", "content": block.text}
+                    )
+                elif (
+                    isinstance(block, ToolResultBlock)
+                    and block.state != ToolResultState.RUNNING
+                ):
+                    output.append(
+                        {
+                            "id": block.id,
+                            "role": "tool",
+                            "content": block.name,
+                            "result": tool_result(block),
+                        }
+                    )
     return output
 
 
-def turn_input(messages, incoming):
-    """追加新一轮消息前，为取消后未完成的工具调用补齐中断结果。"""
-    pending = {}
-    for message in messages:
-        if isinstance(message, AIMessage):
-            pending.update({call["id"]: call for call in message.tool_calls})
-        elif isinstance(message, ToolMessage):
-            pending.pop(message.tool_call_id, None)
-    return [
-        *(
-            ToolMessage(content="上轮执行已中断，未取得结果。", tool_call_id=key)
-            for key in pending
-        ),
-        incoming,
-    ]
-
-
 class StreamProjection:
-    """将主图原生消息和节点更新转换为聊天事件，每次执行独立去重。"""
+    def __init__(self, history: list[Msg]):
+        self.history = history
+        self.reply: Msg | None = None
 
-    def __init__(self):
-        self.started: set[str] = set()
-        self.finished: set[str] = set()
-
-    def convert(self, mode, event):
-        if mode == "messages":
-            chunk, metadata = event
-            if (
-                metadata.get("langgraph_node") == "model"
-                and isinstance(chunk, AIMessageChunk)
-                and chunk.text
-            ):
-                yield {"type": "delta", "delta": chunk.text, "message_id": chunk.id}
+    def convert(self, event):
+        if isinstance(event, ReplyStartEvent):
+            self.reply = AssistantMsg(name=event.name, id=event.reply_id, content=[])
+            self.history.append(self.reply)
+        if self.reply is None:
             return
-        if mode != "updates" or not isinstance(event, dict):
-            return
-        for update in event.values():
-            if not isinstance(update, dict):
-                continue
-            messages = update.get("messages", [])
-            if isinstance(messages, (AIMessage, ToolMessage)):
-                messages = [messages]
-            for message in messages:
-                if isinstance(message, AIMessage):
-                    for call in message.tool_calls:
-                        if call["id"] and call["id"] not in self.started:
-                            self.started.add(call["id"])
-                            yield {
-                                "type": "tool_start",
-                                "name": call["name"],
-                                "id": call["id"],
-                            }
-                elif (
-                    isinstance(message, ToolMessage)
-                    and message.tool_call_id not in self.finished
-                ):
-                    self.finished.add(message.tool_call_id)
-                    projected = public_messages([message])[0]
-                    yield {
-                        "type": "tool_result",
-                        "id": message.tool_call_id,
-                        "name": message.name,
-                        "result": projected["result"],
-                    }
+        self.reply.append_event(event)
+        if isinstance(event, TextBlockDeltaEvent):
+            yield {"type": "delta", "delta": event.delta, "message_id": event.block_id}
+        elif isinstance(event, ToolResultStartEvent):
+            yield {
+                "type": "tool_start",
+                "name": event.tool_call_name,
+                "id": event.tool_call_id,
+            }
+        elif isinstance(event, ToolResultEndEvent):
+            block = next(
+                block
+                for block in self.reply.content
+                if isinstance(block, ToolResultBlock) and block.id == event.tool_call_id
+            )
+            yield {
+                "type": "tool_result",
+                "id": block.id,
+                "name": block.name,
+                "result": tool_result(block),
+            }

@@ -1,50 +1,46 @@
 """应用组件装配与本地服务启动入口。"""
 
 import subprocess
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 
 import uvicorn
+from agentscope.app.storage import AsyncSQLAlchemyStorage
 from fastapi import FastAPI
 from loguru import logger
+from sqlalchemy import URL
 
+from app.agent.runtime import create_runtime
 from app.api.conversations import router
-from app.clients.langgraph_postgres_manager import LangGraphPostgresManager
-from app.clients.postgres_client_manager import PostgresClientManager
 from app.config import app_config
 from app.errors.base import ProblemDetails
 from app.errors.exc_handlers import register_exception_handlers
-from app.models.conversation import Conversation
 from app.observability.log import setup_logger
 from app.observability.trace import TraceMiddleware
-from app.repositories.conversations import ConversationRepository
 from app.services.conversations import ConversationService
-from app.services.runs import AgentRunService
 
 
 @asynccontextmanager
 async def lifespan(app):
     logger.info("开始初始化应用资源")
-    async with AsyncExitStack() as stack:
-        postgres = PostgresClientManager(
-            app_config.cfg.langgraph_postgresql, Conversation
+    settings = app_config.cfg.postgresql
+    url = URL.create(
+        "postgresql+psycopg",
+        username=settings.user,
+        password=settings.password.get_secret_value(),
+        host=settings.host,
+        port=settings.port,
+        database=settings.database,
+    )
+    runtime = create_runtime(
+        AsyncSQLAlchemyStorage(
+            url.render_as_string(hide_password=False),
+            engine_kwargs={"pool_pre_ping": True, "hide_parameters": True},
         )
-        stack.push_async_callback(postgres.close)
-        postgres.init()
-        await postgres.init_tables()
-
-        persistence = LangGraphPostgresManager(app_config.cfg.langgraph_postgresql)
-        stack.push_async_callback(persistence.close)
-        await persistence.init()
-
-        repository = ConversationRepository(postgres.session_maker)
-        runs = AgentRunService(persistence.get_checkpointer(), repository)
-        stack.push_async_callback(runs.close)
-        app.state.conversations = ConversationService(repository, runs)
+    )
+    async with runtime.router.lifespan_context(runtime):
+        app.state.conversations = ConversationService(runtime.state)
         logger.info("应用资源初始化完成")
-        try:
-            yield
-        finally:
-            logger.info("开始释放应用资源")
+        yield
     logger.info("应用资源释放完成")
     await logger.complete()
 
