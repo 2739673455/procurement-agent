@@ -76,9 +76,8 @@ def create_runtime(
                 []
                 if context.intent != "active"
                 else [
-                    tool
-                    for key in definition.tool_factories
-                    for tool in catalog.factories[key](context)
+                    catalog.factories[path](context)
+                    for path in definition.tool_factories
                 ]
             )
             role_tools.set(cached)

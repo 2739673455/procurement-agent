@@ -10,7 +10,7 @@ from app.errors.agent import AgentError
 
 
 class SessionDirectoryBackend(BackendBase):
-    """为工具提供会话默认目录，绝对路径和上级路径仍可访问同一工作空间。"""
+    """绑定会话执行目录，文件路径按框架原生约定传给工作空间后端。"""
 
     def __init__(self, backend: BackendBase, directory: str):
         """绑定执行后端和目录；不改变用户共享后端的工作目录。"""
@@ -18,7 +18,7 @@ class SessionDirectoryBackend(BackendBase):
         self.directory = directory
 
     async def getcwd(self) -> str:
-        """返回当前会话的默认目录，供文件工具解析相对路径。"""
+        """返回会话目录，供 Bash、Glob、Grep 确定默认执行或搜索位置。"""
         return self.directory
 
     async def exec_shell(self, command, *, cwd=None, timeout=None):
@@ -30,12 +30,12 @@ class SessionDirectoryBackend(BackendBase):
         )
 
     async def read_file(self, path: str) -> bytes:
-        """读取以会话目录为起点解析的文件，保留绝对路径访问。"""
-        return await self.backend.read_file(self.abspath(path, cwd=self.directory))
+        """读取原生文件工具传入的绝对路径。"""
+        return await self.backend.read_file(path)
 
     async def write_file(self, path: str, data: bytes) -> None:
-        """写入以会话目录为起点解析的文件，保留绝对路径访问。"""
-        await self.backend.write_file(self.abspath(path, cwd=self.directory), data)
+        """写入原生文件工具传入的绝对路径。"""
+        await self.backend.write_file(path, data)
 
 
 class SessionDirectoryMiddleware(MiddlewareBase):
@@ -65,9 +65,18 @@ class SessionDirectoryMiddleware(MiddlewareBase):
         return (
             current_prompt
             + f"\n当前会话的默认工作目录是 {self.backend.directory}。"
-            + f"用户工作空间根目录是 {self.workspace_root}；"
-            + "可以通过绝对路径或相对路径访问同一工作空间内的其他目录。"
+            + "Bash 中的相对路径以当前会话目录为起点。"
+            + "Read、Write、Edit 的 file_path 必须使用绝对路径；"
+            + "访问当前会话的文件时，请以当前会话目录拼接完整路径。"
+            + "Glob、Grep 默认搜索当前会话目录。"
+            + f"用户工作空间根目录是 {self.workspace_root}，"
+            + "可以访问同一用户工作空间内其他会话的目录。"
         )
+
+
+def session_directory(workspace: WorkspaceBase, session_id: str) -> str:
+    """返回当前会话目录，统一工具工作目录和附件保存位置。"""
+    return workspace.get_backend().join_path(workspace.workdir, "sessions", session_id)
 
 
 async def session_directory_middlewares(
@@ -75,7 +84,7 @@ async def session_directory_middlewares(
 ) -> list[MiddlewareBase]:
     """首次执行时创建会话目录，并为本轮框架工具生成目录绑定中间件。"""
     backend = workspace.get_backend()
-    directory = backend.join_path(workspace.workdir, "sessions", session_id, "work")
+    directory = session_directory(workspace, session_id)
     result = await backend.exec_shell(["mkdir", "-p", "--", directory])
     if result.exit_code != 0:
         raise AgentError("无法创建会话工作目录。", 503)

@@ -16,7 +16,6 @@ from agentscope.message import ToolResultBlock
 from agentscope.model import ChatModelBase, ChatResponse
 from pydantic import SecretStr, TypeAdapter
 
-from app.agents.procurement.definition import TOOL_FACTORIES
 from app.contracts.sessions import Command
 from app.errors.agent import AgentError
 from app.runtime.bootstrap import RuntimeAgent, create_runtime
@@ -62,7 +61,9 @@ def response(text=None, tool=False):
         value.append_text(text)
     if tool:
         value.append_tool_call(
-            name="query_items", input='{"query":"bolt"}', block_id="call1"
+            name="query_items",
+            input='{"filters":[["item_code","like","%bolt%"]]}',
+            block_id="call1",
         )
     return value
 
@@ -71,7 +72,7 @@ def response(text=None, tool=False):
 async def service_at(path):
     app = create_runtime(
         AsyncSQLAlchemyStorage(f"sqlite+aiosqlite:///{path / 'state.db'}"),
-        catalog=AgentCatalog(TOOL_FACTORIES),
+        catalog=AgentCatalog(),
         workspace_manager=LocalWorkspaceManager(
             str(path / "workspaces"), isolation=IsolationPolicy.PER_USER
         ),
@@ -163,14 +164,15 @@ def test_tool_history_restored_and_credentials_bound(monkeypatch, tmp_path):
         first = Model([response("查询中", True), response("找到物料")])
         second = Model([response("继续回复")])
         use_models(monkeypatch, [first, second])
-        from app.agents.procurement.tools import items
+        from app.tools import items
 
         owners = []
 
-        def query(erp, query: str, *, offset: int, limit: int):
+        async def query(erp, *, filters, limit_start, limit_page_length, **kwargs):
             owners.append(erp)
-            assert (query, offset, limit) == ("bolt", 0, 20)
-            return {"items": [{"item_code": "BOLT"}]}
+            assert filters == [["item_code", "like", "%bolt%"]]
+            assert (limit_start, limit_page_length) == (0, 20)
+            return {"data": [{"item_code": "BOLT"}]}
 
         monkeypatch.setattr(items.items, "query_items", query)
         async with service_at(tmp_path) as service:
@@ -307,13 +309,13 @@ def test_native_model_factory_resolves_server_reference(tmp_path):
 
 def test_concurrent_users_get_separate_erp_clients(monkeypatch, tmp_path):
     async def scenario():
-        from app.agents.procurement.tools import items
+        from app.tools import items
 
         owners = []
 
-        def query(erp, query: str, *, offset: int, limit: int):
+        async def query(erp, **kwargs):
             owners.append(erp)
-            return {"items": []}
+            return {"data": []}
 
         monkeypatch.setattr(items.items, "query_items", query)
         use_models(
@@ -331,6 +333,7 @@ def test_concurrent_users_get_separate_erp_clients(monkeypatch, tmp_path):
                 watch(service, b, owner=("site", "other")) as second,
             ):
                 await command(service, "send", a, message="query", erp="client-A")
+                first_task = service.runtime.chat_run_registry.get(a)
                 await command(
                     service,
                     "send",
@@ -339,7 +342,7 @@ def test_concurrent_users_get_separate_erp_clients(monkeypatch, tmp_path):
                     owner=("site", "other"),
                     erp="client-B",
                 )
-                tasks = [service.runtime.chat_run_registry.get(id) for id in (a, b)]
+                tasks = [first_task, service.runtime.chat_run_registry.get(b)]
                 assert all(task is not None for task in tasks)
                 await asyncio.wait_for(asyncio.gather(*tasks), 10)
             results = [first, second]
@@ -358,17 +361,17 @@ def test_cancel_during_tool_preserves_result_pairs(monkeypatch, tmp_path):
         from agentscope.permission import PermissionBehavior, PermissionDecision
         from agentscope.tool import FunctionTool, ToolChunk
 
-        from app.agents.procurement import definition
+        from app.tools import items as item_tools
 
         entered = asyncio.Event()
 
-        async def query_items(query: str) -> ToolChunk:
+        async def query_items(filters: list[list[str]]) -> ToolChunk:
             entered.set()
             await asyncio.Event().wait()
             return ToolChunk(content=[])
 
         monkeypatch.setattr(
-            definition,
+            item_tools,
             "create_items_tool",
             lambda _: FunctionTool(
                 query_items,
@@ -491,5 +494,64 @@ def test_agent_setup_failure_closes_all_model_clients(monkeypatch, tmp_path):
             assert not primary.inputs and not fallback.inputs
             primary.client.close.assert_awaited_once()
             fallback.client.close.assert_awaited_once()
+
+    asyncio.run(scenario())
+
+
+def test_upload_workspace_ownership_and_cleanup(tmp_path):
+    """同名上传覆盖，附件按会话查找，删除会话只清理所属文件。"""
+    import base64
+    from pathlib import Path
+
+    async def scenario():
+        async with service_at(tmp_path) as service:
+            first = (await command(service, "create"))["id"]
+            second = (await command(service, "create"))["id"]
+            data = {
+                "name": "报价.csv",
+                "data": base64.b64encode("型号,数量\nA,3".encode()).decode(),
+            }
+            uploaded = await command(service, "upload", first, upload=data)
+            replacement = {**data, "data": base64.b64encode(b"updated").decode()}
+            duplicate = await command(service, "upload", first, upload=replacement)
+            assert uploaded == duplicate
+            assert "id" not in uploaded
+            assert Path(uploaded["path"]).read_bytes() == b"updated"
+            assert Path(uploaded["path"]).parts[-4:] == (
+                "sessions",
+                first,
+                "attachments",
+                "报价.csv",
+            )
+            user_id, row = await service._get_session(("site", "owner"), first)
+            loaded = await service.attachments.load(
+                user_id, row, ["报价.csv", "报价.csv"]
+            )
+            assert loaded == [uploaded]
+            _, other = await service._get_session(("site", "owner"), second)
+            with pytest.raises(AgentError):
+                await service.attachments.load(user_id, other, ["报价.csv"])
+            independent = await command(service, "upload", second, upload=data)
+            assert independent["path"] != uploaded["path"]
+            assert Path(independent["path"]).read_text() == "型号,数量\nA,3"
+            with pytest.raises(AgentError):
+                await command(
+                    service, "upload", first, owner=("site", "intruder"), upload=data
+                )
+            for name in ("../escape", "..", "nested/file", r"nested\file"):
+                with pytest.raises(AgentError):
+                    await command(
+                        service, "upload", first, upload={**data, "name": name}
+                    )
+                with pytest.raises(AgentError):
+                    await service.attachments.load(user_id, row, [name])
+            with pytest.raises(AgentError):
+                await command(
+                    service, "upload", first, upload={**data, "data": "!invalid"}
+                )
+            assert Path(uploaded["path"]).read_bytes() == b"updated"
+            await command(service, "delete", first)
+            assert not Path(uploaded["path"]).exists()
+            assert Path(independent["path"]).read_text() == "型号,数量\nA,3"
 
     asyncio.run(scenario())

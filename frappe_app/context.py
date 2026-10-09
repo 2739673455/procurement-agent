@@ -1,7 +1,4 @@
-"""整理当前页面的表单快照和用户选择的附件。"""
-
-import base64
-import mimetypes
+"""整理当前页面的表单快照。"""
 
 import frappe
 
@@ -53,28 +50,4 @@ def page_snapshot(value):
         return output
 
     result["doc"] = fields(result["doctype"], page.get("doc") or {})
-    return result
-
-
-def attachment_payloads(value):
-    """读取当前用户有权限访问的本地附件，不接受浏览器提供的文件路径。"""
-    result = []
-    for identifier in frappe.parse_json(value) or []:
-        file = frappe.get_doc("File", identifier)
-        file.check_permission("read")
-        if file.is_folder or file.is_remote_file:
-            frappe.throw("请选择已上传的本地文件。")
-        # 保留上传文件的原始字节，避免默认文本解码改变 PDF 或图片内容。
-        content = file.get_content(encodings=())
-        if isinstance(content, str):
-            content = content.encode("utf-8")
-        result.append(
-            {
-                "id": file.name,
-                "name": file.file_name,
-                "media_type": mimetypes.guess_type(file.file_name)[0]
-                or "application/octet-stream",
-                "data": base64.b64encode(content).decode("ascii"),
-            }
-        )
     return result

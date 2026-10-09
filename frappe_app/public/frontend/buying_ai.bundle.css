@@ -347,9 +347,10 @@
 	padding-left: 20px;
 	color: var(--text-muted);
 }
-.buying-ai-run-controls > [role="group"] {
+.buying-ai-run-controls > fieldset {
+	min-width: 0;
 	padding: 8px;
-	margin-bottom: 8px;
+	margin: 0 0 8px;
 	border: 1px solid var(--border-color);
 	border-radius: var(--border-radius-md, 8px);
 }

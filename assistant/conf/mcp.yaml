@@ -1,5 +1,19 @@
-# 使用 AgentScope 原生 MCPClient 结构配置服务，再由各角色按配置名引用。
-# STDIO 示例：name、is_stateful: true、mcp_config: {type: stdio_mcp, command: npx, args: [...]}
-# HTTP 示例：name、is_stateful: false、mcp_config: {type: http_mcp, url: "https://example.com/mcp"}
-# env 或 headers 中的密钥通过 ${oc.env:变量名} 引用，不写入模型消息和 AgentState。
+# 所有 MCP 服务写在 servers 下；框架的 name 自动使用外层服务配置名。
+# 在 agents.yaml 的角色中用 mcps: [files, documents] 引用对应服务。
+# 需要启用时，将 servers: {} 替换为以下结构，并填写实际命令或地址：
+#
+# servers:
+#   files:                         # 服务配置名，可自行命名。
+#     is_stateful: true            # STDIO 必须为 true。
+#     mcp_config:
+#       type: stdio_mcp
+#       command: python3           # 实际 MCP 服务的启动命令。
+#       args: [/workspace/mcp/server.py] # 替换为实际启动参数。
+#   documents:
+#     is_stateful: false
+#     mcp_config:
+#       type: http_mcp
+#       url: https://example.com/mcp # 替换为实际 MCP 服务地址。
+#
+# env 或 headers 中的密钥通过 ${oc.env:变量名} 引用。
 servers: {}

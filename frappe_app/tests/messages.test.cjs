@@ -41,7 +41,7 @@ test("SSE 分块中的原生事件经 SDK 累积后渲染文本、物料结果�
 		{
 			type: "TOOL_RESULT_TEXT_DELTA",
 			tool_call_id: "tool",
-			delta: '{"items":[{"name":"BOLT","item_name":"螺丝"}]}',
+			delta: '{"data":[{"name":"BOLT","item_name":"螺丝"}]}',
 		},
 		{
 			type: "TOOL_RESULT_DATA_DELTA",
@@ -70,7 +70,7 @@ test("SSE 分块中的原生事件经 SDK 累积后渲染文本、物料结果�
 			"\r\n\r\n",
 	);
 	const data = new TextEncoder().encode(
-		": heartbeat\r\n\r\n" + frames.join(""),
+		`: heartbeat\r\n\r\n${frames.join("")}`,
 	);
 	const originalFetch = global.fetch;
 	global.fetch = async (_url, options) => {
@@ -101,6 +101,8 @@ test("SSE 分块中的原生事件经 SDK 累积后渲染文本、物料结果�
 		}),
 	);
 	assert.match(html, /找到物料/);
+	assert.match(html, /返回 1 条物料/);
+	assert.match(html, /class="btn btn-default btn-sm"/);
 	assert.match(html, /BOLT/);
 	assert.match(html, /螺丝/);
 	assert.match(html, /data:image\/png;base64,cG5n/);
@@ -292,6 +294,49 @@ test("运行控制提交独立动作和原生确认结果，界面显示恢复�
 	assert.match(html, /继续执行/);
 	assert.match(html, /取消任务/);
 	assert.match(html, /允许本次调用/);
+	assert.match(html, /<fieldset aria-label="工具权限确认">/);
 	assert.match(html, /分析员：等待确认/);
 	assert.match(html, /echo hello/);
+});
+
+test("附件上传绑定当前会话并通过助手入口传递原始内容", async () => {
+	const { upload } = require("../public/frontend/api.ts");
+	const originalFetch = global.fetch;
+	const originalReader = global.FileReader;
+	const content = Buffer.from("型号,数量\nA,3");
+	global.FileReader = class {
+		async readAsDataURL(file) {
+			this.result = `data:${file.type};base64,${Buffer.from(await file.arrayBuffer()).toString("base64")}`;
+			this.onload();
+		}
+	};
+	global.fetch = async (url, options) => {
+		assert.equal(url, "/api/method/buying_ai.api.sessions");
+		assert.equal(options.headers["X-Frappe-CSRF-Token"], "test");
+		const body = JSON.parse(options.body);
+		assert.equal(body.action, "upload");
+		assert.equal(body.session_id, "current-session");
+		assert.equal(body.upload.name, "报价.csv");
+		assert.deepEqual(Buffer.from(body.upload.data, "base64"), content);
+		return new Response(
+			JSON.stringify({
+				message: {
+					name: "报价.csv",
+					path: "/workspace/file",
+				},
+			}),
+		);
+	};
+	try {
+		const result = await upload(
+			"current-session",
+			new File([content], "报价.csv", { type: "text/csv" }),
+			new AbortController().signal,
+		);
+		assert.equal(result.name, "报价.csv");
+		assert.equal("id" in result, false);
+	} finally {
+		global.fetch = originalFetch;
+		global.FileReader = originalReader;
+	}
 });

@@ -17,7 +17,7 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 /** 展示物料查询结果和跳转入口，其他结果按文本显示。 */
 function ItemResults({ result }: { result: unknown }) {
-	if (!record(result) || !Array.isArray(result.items)) {
+	if (!record(result) || !Array.isArray(result.data)) {
 		return (
 			<p>
 				{display(
@@ -26,25 +26,31 @@ function ItemResults({ result }: { result: unknown }) {
 			</p>
 		);
 	}
+	const rows = result.data.filter(record);
+	const linkable = rows.every(
+		(item) => typeof item.name === "string" && item.name,
+	);
 	return (
 		<>
-			<p>
-				{display(
-					result.error ||
-						`返回 ${result.items.length} 条物料，起始位置 ${result.offset || 0}${result.has_more ? "，还有更多结果" : ""}`,
-				)}
-			</p>
-			{result.items.filter(record).map((item, index) => (
-				<button
-					type="button"
-					className="btn btn-default btn-sm"
-					key={String(item.name || index)}
-					onClick={() => frappe.set_route("Form", "Item", String(item.name))}
-				>
-					{display(item.item_code || item.name)} ·{" "}
-					{display(item.item_name || "查看物料")}
-				</button>
-			))}
+			<p>返回 {result.data.length} 条物料</p>
+			{linkable ? (
+				rows.map((item) => {
+					const name = String(item.name);
+					return (
+						<button
+							type="button"
+							className="btn btn-default btn-sm"
+							key={name}
+							onClick={() => frappe.set_route("Form", "Item", name)}
+						>
+							{display(item.item_code || name)} ·{" "}
+							{display(item.item_name || "查看物料")}
+						</button>
+					);
+				})
+			) : (
+				<pre>{JSON.stringify(result.data, null, 2)}</pre>
+			)}
 		</>
 	);
 }
@@ -118,7 +124,8 @@ export function MessageList({
 }) {
 	const log = useRef<HTMLDivElement>(null);
 	useEffect(() => {
-		if (log.current) log.current.scrollTop = log.current.scrollHeight;
+		if (messages.length && log.current)
+			log.current.scrollTop = log.current.scrollHeight;
 	}, [messages]);
 	return (
 		<div className="buying-ai-chat-log" role="log" ref={log}>
@@ -167,10 +174,10 @@ export function MessageList({
 							)}
 							{Array.isArray(files) &&
 								files.map(
-									(file, index) =>
+									(file) =>
 										record(file) && (
 											<small
-												key={index}
+												key={display(file.name)}
 												className="buying-ai-chat-message-meta"
 											>
 												附件：{display(file.name)}

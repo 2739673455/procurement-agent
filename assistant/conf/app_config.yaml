@@ -23,11 +23,11 @@ erpnext:
   site: "development.localhost" # ERPNext 站点名称。
   timeout_seconds: 5 # ERPNext 请求超时，单位为秒。
 
-# AgentScope Docker 工作空间：每个用户一个容器，会话默认目录为 /workspace/sessions/<session_id>/work/。
+# AgentScope Docker 工作空间：每个用户一个容器，会话默认目录为 /workspace/sessions/<session_id>/。
 workspace:
   base_image: python:3.13-slim # 提供 python3 的基础镜像；框架自动构建并缓存工具镜像。
   node_version: "22" # 容器内 Node.js 的主版本，用于运行 Node.js 工具和 MCP 服务。
-  extra_pip: [] # 预装到容器内的额外 Python 包，例如 pandas、pypdf。
+  extra_pip: [pypdf] # 预装到容器内的额外 Python 包，例如 pandas、pypdf。
   ttl_seconds: 3600 # 工作空间空闲多久后回收容器，单位为秒；保留挂载的工作文件。
   sweep_interval_seconds: 300 # 框架扫描空闲工作空间的间隔，单位为秒。
 

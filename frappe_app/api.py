@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 
 import frappe
-from buying_ai.context import attachment_payloads, page_snapshot
+from buying_ai.context import page_snapshot
 from werkzeug.wrappers import Response
 
 
@@ -29,8 +29,8 @@ def sessions(
     title="",
     page_context=None,
     attachments=None,
-    agent_key=None,
     confirmation=None,
+    upload=None,
 ):
     """代理会话操作：订阅返回 SSE 长连接，其余操作返回 JSON。"""
     # 转发当前登录会话，供 Assistant 验证身份。
@@ -41,13 +41,13 @@ def sessions(
         "title": title,
         "sid": frappe.session.sid,
     }
-    if action == "create":
-        payload["agent_key"] = agent_key
     if action == "confirm":
         payload["confirmation"] = frappe.parse_json(confirmation)
     if action == "send":
         payload["page_context"] = page_snapshot(page_context)
-        payload["attachments"] = attachment_payloads(attachments)
+        payload["attachments"] = frappe.parse_json(attachments) or []
+    if action == "upload":
+        payload["upload"] = frappe.parse_json(upload)
     data = json.dumps(payload).encode()
     # 从环境变量读取 Assistant 服务地址。
     base = os.environ["BUYING_AI_AGENT_URL"].rstrip("/")
@@ -60,7 +60,8 @@ def sessions(
         headers={"Content-Type": "application/json", "X-Trace-ID": trace_id},
     )
     try:
-        upstream = urlopen(request, timeout=35)
+        # 首次上传可能触发工作空间镜像构建和容器创建。
+        upstream = urlopen(request, timeout=300 if action == "upload" else 35)
         # 普通响应的读取和 JSON 解析也属于上游请求过程。
         if action != "subscribe":
             with upstream:

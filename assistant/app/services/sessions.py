@@ -6,10 +6,12 @@ from uuid import uuid4
 from agentscope.app._router._session import stream_session_events
 from agentscope.app.storage import SessionConfig, SessionNaming
 
+from app.config import app_config
 from app.contracts.sessions import Command
 from app.errors.agent import AgentError
 from app.runtime.context import CONTROL_KEY
 from app.services.agents import AgentService
+from app.services.attachments import AttachmentService
 from app.services.inputs import user_message
 from app.services.runs import RunService
 from app.services.teams import TeamService
@@ -23,6 +25,7 @@ class SessionService:
         self.runtime = runtime
         self.storage = runtime.storage
         self.agents = AgentService(runtime)
+        self.attachments = AttachmentService(runtime.workspace_manager)
         self.teams = TeamService(runtime)
         self.runs = RunService(runtime, self.teams)
         self._lock = asyncio.Lock()
@@ -30,18 +33,18 @@ class SessionService:
     async def execute(self, command: Command, owner, erp):
         """分发已认证请求，各操作分别检查会话归属和运行条件。"""
         match command.action:
-            case "agents":
-                return self.agents.list()
             case "list":
                 return await self.list(owner)
             case "create":
-                return await self.create(owner, command.agent_key)
+                return await self.create(owner)
             case "messages":
                 return await self.messages(owner, command.session_id)
             case "rename":
                 return await self.rename(owner, command.session_id, command.title)
             case "delete":
                 return await self.delete(owner, command.session_id, erp)
+            case "upload":
+                return await self.upload(owner, command.session_id, command.upload)
             case "send":
                 return await self.send(
                     owner,
@@ -92,11 +95,11 @@ class SessionService:
         return user_id, row
 
     async def list(self, owner):
-        """列出全部入口角色的用户会话，排除框架团队及角色参考会话。"""
+        """列出用户会话，排除框架团队及角色参考会话。"""
         async with self._lock:
             user_id = self.agents.catalog.user_id(owner)
             sessions = []
-            for key, definition in self.agents.catalog.definitions.agents.items():
+            for key in self.agents.catalog.definitions.agents:
                 rows = await self.storage.list_sessions(
                     user_id, self.agents.catalog.agent_id(user_id, key)
                 )
@@ -110,8 +113,6 @@ class SessionService:
                                 "id": row.id,
                                 "title": row.config.name,
                                 "updated_at": row.updated_at,
-                                "agent_key": key,
-                                "agent_name": definition.name,
                             }
                         )
             return {
@@ -120,13 +121,11 @@ class SessionService:
                 )
             }
 
-    async def create(self, owner, agent_key=None):
-        """创建选定角色的会话，并将成员模型配置登记到原生邀请机制。"""
+    async def create(self, owner):
+        """创建默认入口角色的会话，并将成员模型配置登记到原生邀请机制。"""
         async with self._lock:
-            key = agent_key or self.agents.catalog.definitions.default
-            if key not in self.agents.catalog.definitions.agents:
-                raise AgentError("角色不存在。", 404)
-            user_id, agent_id = self.agents.identity(owner, key)
+            key = self.agents.catalog.definitions.default
+            user_id, agent_id = self.agents.identity(owner)
             models = await self.agents.configure_user(user_id)
             identifier = str(uuid4())
             workspace_id = await self.runtime.workspace_manager.assign_workspace_id(
@@ -196,6 +195,14 @@ class SessionService:
             self.runtime.contexts.forget(row.id)
             return {"ok": True}
 
+    async def upload(self, owner, session_id, upload):
+        """验证会话归属，将上传文件保存到该会话的持久化工作空间。"""
+        async with self._lock:
+            user_id, row = await self._get_session(owner, session_id)
+            if upload is None:
+                raise AgentError("缺少上传文件。")
+            return await self.attachments.save(user_id, row, upload)
+
     async def send(self, owner, session_id, *, message, page_context, attachments, erp):
         """装配用户输入和角色配置，通过运行服务启动框架任务。"""
         async with self._lock:
@@ -203,14 +210,18 @@ class SessionService:
             if not message.strip():
                 raise AgentError("消息不能为空。")
             await self.runs.require_idle(user_id, row)
-            key, _ = self.agents.catalog.definition(user_id, row.agent_id)
+            key, definition = self.agents.catalog.definition(user_id, row.agent_id)
             models = await self.agents.configure_user(user_id)
             row.config.chat_model_config = models[key]
             await self.storage.upsert_session(
                 user_id, row.agent_id, row.config, session_id=row.id
             )
-            incoming = await asyncio.to_thread(
-                user_message, message.strip(), page_context, attachments
+            files = await self.attachments.load(user_id, row, attachments)
+            model = app_config.cfg.lm_config.models[
+                definition.model or app_config.cfg.lm_config.active
+            ]
+            incoming = user_message(
+                message.strip(), page_context, files, image_inputs=model.image_inputs
             )
             return await self.runs.start(user_id, row, incoming, {"erpnext": erp})
 

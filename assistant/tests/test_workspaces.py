@@ -1,6 +1,7 @@
 """真实 Docker 工作空间的用户隔离、会话默认目录与文件持久化检查。"""
 
 import asyncio
+import base64
 import json
 import os
 
@@ -10,7 +11,7 @@ from agentscope.app.storage import AsyncSQLAlchemyStorage
 from agentscope.message import TextBlock, ToolResultState
 from test_runs import Model, response, run_turn, use_models
 
-from app.agents.procurement.definition import TOOL_FACTORIES
+from app.contracts.sessions import AttachmentUpload
 from app.runtime import bootstrap as runtime
 from app.runtime.catalog import AgentCatalog
 from app.services.sessions import SessionService
@@ -58,7 +59,7 @@ def test_docker_user_isolation_and_session_directories(monkeypatch, tmp_path):
         use_models(monkeypatch, models.copy())
         app = runtime.create_runtime(
             AsyncSQLAlchemyStorage(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}"),
-            catalog=AgentCatalog(TOOL_FACTORIES),
+            catalog=AgentCatalog(),
         )
         container_names = set()
         async with app.router.lifespan_context(app):
@@ -83,6 +84,15 @@ def test_docker_user_isolation_and_session_directories(monkeypatch, tmp_path):
             assert first is second
             assert first.workspace_id != other_user.workspace_id
             backend = first.get_backend()
+            uploaded = await service.upload(
+                owner,
+                session_id,
+                AttachmentUpload(
+                    name="用户上传.txt",
+                    data=base64.b64encode(b"uploaded-content").decode(),
+                ),
+            )
+            assert await backend.read_file(uploaded["path"]) == b"uploaded-content"
             for current_session in [session_id, second_session]:
                 events = await run_turn(service, current_session, message="开始")
                 assert not [
@@ -99,8 +109,8 @@ def test_docker_user_isolation_and_session_directories(monkeypatch, tmp_path):
                 for group in agents[second_session].toolkit.tool_groups
                 for tool in group.tools
             }
-            first_directory = f"/workspace/sessions/{session_id}/work"
-            second_directory = f"/workspace/sessions/{second_session}/work"
+            first_directory = f"/workspace/sessions/{session_id}"
+            second_directory = f"/workspace/sessions/{second_session}"
             first_pwd, second_pwd = await asyncio.gather(
                 tool_text(first_tools["Bash"], command="pwd"),
                 tool_text(second_tools["Bash"], command="pwd"),
@@ -123,11 +133,47 @@ def test_docker_user_isolation_and_session_directories(monkeypatch, tmp_path):
             assert "session-A" in await tool_text(
                 second_tools["Read"], file_path=first_file
             )
+            written_file = f"{first_directory}/written.txt"
+            await tool_text(
+                first_tools["Write"], file_path=written_file, content="written"
+            )
+            assert "written" in await tool_text(
+                first_tools["Read"], file_path=written_file
+            )
+            await tool_text(
+                first_tools["Edit"],
+                file_path=written_file,
+                old_string="written",
+                new_string="edited",
+            )
+            assert await backend.read_file(written_file) == b"edited"
+            for name, arguments in (
+                ("Read", {"file_path": "result.txt"}),
+                ("Write", {"file_path": "relative.txt", "content": "text"}),
+                (
+                    "Edit",
+                    {
+                        "file_path": "result.txt",
+                        "old_string": "session-A",
+                        "new_string": "changed",
+                    },
+                ),
+            ):
+                result = await first_tools[name].call(**arguments)
+                assert result.state == ToolResultState.ERROR
+                assert "absolute path" in "".join(
+                    block.text
+                    for block in result.content
+                    if isinstance(block, TextBlock)
+                )
+            assert await backend.read_file(first_file) == b"session-A"
             assert not await other_user.get_backend().file_exists(first_file)
             assert await backend.getcwd() == "/workspace"
-            assert any(
-                first_directory in msg.get_text_content() for msg in models[0].inputs[0]
+            prompt = "\n".join(
+                msg.get_text_content() or "" for msg in models[0].inputs[0]
             )
+            assert first_directory in prompt
+            assert "Read、Write、Edit 的 file_path 必须使用绝对路径" in prompt
 
             checks = await backend.exec_shell(
                 [

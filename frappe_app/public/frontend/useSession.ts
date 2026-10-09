@@ -9,7 +9,7 @@ import {
 	type Msg,
 	UserMsg,
 } from "@agentscope-ai/agentscope/message";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { api, events, upload } from "./api";
 import { frappe, pageSnapshot } from "./frappe";
 import type {
@@ -349,7 +349,7 @@ export function useSession() {
 								is_dirty: Boolean(context.is_dirty),
 							}
 						: null,
-					attachments: attachments.map((file) => ({ name: file.file_name })),
+					attachments: attachments.map((file) => ({ name: file.name })),
 				},
 			}),
 		]);
@@ -417,14 +417,19 @@ export function useSession() {
 	}
 	/** 依次上传文件并更新上传状态和待发送附件列表。 */
 	async function uploadFiles(files: File[]) {
+		const id = currentRef.current;
+		if (!id) return;
 		const signal = view.current.signal;
 		setUploading(true);
 		try {
 			for (const file of files) {
 				setStatus(`正在上传：${file.name}`);
-				const attachment = await upload(file, signal);
+				const attachment = await upload(id, file, signal);
 				if (signal.aborted) return;
-				setAttachments((previous) => [...previous, attachment]);
+				setAttachments((previous) => [
+					...previous.filter((file) => file.name !== attachment.name),
+					attachment,
+				]);
 			}
 		} catch (cause) {
 			report(cause, signal);
@@ -435,15 +440,16 @@ export function useSession() {
 			}
 		}
 	}
+	// 面板挂载时恢复会话；后续状态更新不重新初始化订阅。
+	const restore = useEffectEvent(retry);
 	useEffect(() => {
 		lifetime.current = new AbortController();
 		view.current = new AbortController();
-		void retry();
+		void restore();
 		return () => {
 			lifetime.current.abort();
 			view.current.abort();
 		};
-		// 面板挂载时恢复会话；用户操作通过当前会话引用执行。
 	}, []);
 	return {
 		sessions,
@@ -471,7 +477,7 @@ export function useSession() {
 		remove,
 		send,
 		uploadFiles,
-		/** 按记录 ID 移除待发送附件，不删除站点文件。 */
+		/** 按文件名移除待发送附件，沙箱中的文件保留。 */
 		removeAttachment: (name: string) =>
 			setAttachments((previous) =>
 				previous.filter((file) => file.name !== name),

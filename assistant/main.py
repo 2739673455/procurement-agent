@@ -3,13 +3,13 @@
 import subprocess
 from contextlib import asynccontextmanager
 
+import httpx
 import uvicorn
 from agentscope.app.storage import AsyncSQLAlchemyStorage
 from fastapi import FastAPI
 from loguru import logger
 from sqlalchemy import URL
 
-from app.agents.procurement.definition import TOOL_FACTORIES
 from app.api.sessions import router
 from app.config import app_config
 from app.errors.base import ProblemDetails
@@ -23,7 +23,7 @@ from app.services.sessions import SessionService
 
 @asynccontextmanager
 async def lifespan(app):
-    """初始化 SQL 存储和框架运行服务，并由框架生命周期管理资源释放。"""
+    """初始化框架运行服务和业务 HTTP 连接池，在后台任务退出后释放连接。"""
     logger.info("开始初始化应用资源")
     settings = app_config.cfg.postgresql
     url = URL.create(
@@ -39,9 +39,18 @@ async def lifespan(app):
             url.render_as_string(hide_password=False),
             engine_kwargs={"pool_pre_ping": True, "hide_parameters": True},
         ),
-        catalog=AgentCatalog(TOOL_FACTORIES),
+        catalog=AgentCatalog(),
     )
-    async with runtime.router.lifespan_context(runtime):
+    erpnext = app_config.cfg.erpnext
+    async with (
+        httpx.AsyncClient(
+            base_url=erpnext.base_url,
+            headers={"Host": erpnext.site},
+            timeout=erpnext.timeout_seconds,
+        ) as erpnext_http,
+        runtime.router.lifespan_context(runtime),
+    ):
+        app.state.erpnext_http = erpnext_http
         app.state.sessions = SessionService(runtime.state)
         logger.info("应用资源初始化完成")
         yield

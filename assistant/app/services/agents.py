@@ -24,12 +24,10 @@ class AgentService:
         self.storage = runtime.storage
         self.catalog = runtime.catalog
 
-    def identity(self, owner, key=None):
-        """按用户归属及角色配置名取得稳定的框架标识。"""
+    def identity(self, owner):
+        """按用户归属及默认入口角色取得稳定的框架标识。"""
         user_id = self.catalog.user_id(owner)
-        return user_id, self.catalog.agent_id(
-            user_id, key or self.catalog.definitions.default
-        )
+        return user_id, self.catalog.agent_id(user_id, self.catalog.definitions.default)
 
     @staticmethod
     def reference_session_id(user_id, key):
@@ -104,17 +102,3 @@ class AgentService:
                 session_id=identifier,
             )
         return models
-
-    def list(self):
-        """返回可用于创建会话的角色摘要，不返回密钥或连接参数。"""
-        return {
-            "default": self.catalog.definitions.default,
-            "agents": [
-                {
-                    "key": key,
-                    "name": definition.name,
-                    "description": definition.description,
-                }
-                for key, definition in self.catalog.definitions.agents.items()
-            ],
-        }

@@ -16,10 +16,11 @@ export interface PageContext {
 	is_dirty?: boolean;
 	doc?: Record<string, unknown>;
 }
-/** Frappe 上传结果，name 是文件记录 ID，file_name 是展示名称。 */
+/** 会话附件的文件名、类型和容器内路径。 */
 export interface Attachment {
 	name: string;
-	file_name: string;
+	media_type: string;
+	path: string;
 }
 /** 持久化聊天记录与服务端运行状态。 */
 export interface History {

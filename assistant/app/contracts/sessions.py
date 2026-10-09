@@ -19,13 +19,11 @@ class PageContext(BaseModel):
     doc: dict[str, Any] | None = None
 
 
-class Attachment(BaseModel):
-    """传给 Assistant 的附件载荷，data 为原始文件内容的 Base64 编码。"""
+class AttachmentUpload(BaseModel):
+    """待写入会话工作空间的文件，data 为原始内容的 Base64 编码。"""
 
     model_config = ConfigDict(extra="forbid")
-    id: str
-    name: str
-    media_type: str
+    name: str = Field(min_length=1, max_length=255)
     data: str = Field(repr=False)
 
 
@@ -35,23 +33,23 @@ class Command(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sid: SecretStr
     action: Literal[
-        "agents",
         "list",
         "create",
         "messages",
         "rename",
         "delete",
         "send",
+        "upload",
         "subscribe",
         "interrupt",
         "resume",
         "cancel",
         "confirm",
     ]
-    session_id: UUID | None = None  # agents、list 和 create 不需要会话 ID。
-    agent_key: str | None = None  # 创建会话时选择角色；空值使用默认角色。
+    session_id: UUID | None = None  # list 和 create 不需要会话 ID。
     confirmation: UserConfirmResultEvent | None = None  # 框架原生工具确认结果。
     message: str = ""
     title: str = Field(default="", max_length=64)
     page_context: PageContext | None = None
-    attachments: list[Attachment] = Field(default_factory=list)
+    attachments: list[str] = Field(default_factory=list)  # 当前会话中的附件文件名。
+    upload: AttachmentUpload | None = None  # 上传操作的文件载荷。

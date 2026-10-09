@@ -75,7 +75,7 @@ export const api = {
 			signal,
 		),
 };
-/** 单轮发送内容，attachments 保存 Frappe 附件 ID。 */
+/** 单轮发送内容，attachments 保存当前会话的附件文件名。 */
 export interface Turn {
 	message: string;
 	page_context: PageContext | null;
@@ -106,8 +106,9 @@ export async function events(
 		while (true) {
 			const chunk = await reader.read();
 			buffer += decoder.decode(chunk.value, { stream: !chunk.done });
-			let boundary: RegExpExecArray | null;
-			while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+			while (true) {
+				const boundary = /\r?\n\r?\n/.exec(buffer);
+				if (!boundary) break;
 				const frame = buffer.slice(0, boundary.index);
 				buffer = buffer.slice(boundary.index + boundary[0].length);
 				const data = frame
@@ -124,22 +125,24 @@ export async function events(
 		reader.releaseLock();
 	}
 }
-/** 上传站点私有附件，返回 Frappe 文件记录标识与文件名。 */
+/** 上传到当前会话的工作空间，同名文件覆盖，返回文件名和路径。 */
 export async function upload(
+	id: string,
 	file: File,
 	signal: AbortSignal,
 ): Promise<Attachment> {
-	const body = new FormData();
-	body.append("file", file);
-	body.append("is_private", "1");
-	const response = await fetch("/api/method/upload_file", {
-		method: "POST",
-		credentials: "same-origin",
-		signal,
-		headers: { "X-Frappe-CSRF-Token": frappe.csrf_token },
-		body,
+	const data = await new Promise<string>((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onload = () => resolve(String(reader.result).split(",", 2)[1]);
+		reader.onerror = () => reject(reader.error || new Error("无法读取附件。"));
+		reader.readAsDataURL(file);
 	});
-	const result = await json<Attachment>(response);
-	if (!result.name) throw new Error(`附件上传失败：${file.name}`);
-	return result;
+	return command<Attachment>(
+		"upload",
+		{
+			session_id: id,
+			upload: { name: file.name, data },
+		},
+		signal,
+	);
 }

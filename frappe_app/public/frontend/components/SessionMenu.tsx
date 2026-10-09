@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session } from "../types";
 
 /** 会话列表、当前选择、操作状态和会话管理回调。 */
@@ -23,10 +23,10 @@ export function SessionMenu(props: Props) {
 	const title =
 		props.sessions.find((row) => row.id === props.current)?.title || "新会话";
 	/** 收起菜单并将键盘焦点返回标题按钮。 */
-	function close() {
+	const close = useCallback(() => {
 		setOpen(false);
 		trigger.current?.focus();
-	}
+	}, []);
 	useEffect(() => {
 		if (!open) return;
 		/** 点击菜单外部时收起菜单。 */
@@ -34,19 +34,19 @@ export function SessionMenu(props: Props) {
 			if (!picker.current?.contains(event.target as Node)) setOpen(false);
 		}
 		/** 按 Esc 收起菜单并恢复按钮焦点。 */
-		function escape(event: KeyboardEvent) {
+		function onKeyDown(event: KeyboardEvent) {
 			if (event.key === "Escape") {
 				event.preventDefault();
 				close();
 			}
 		}
 		document.addEventListener("pointerdown", outside);
-		document.addEventListener("keydown", escape);
+		document.addEventListener("keydown", onKeyDown);
 		return () => {
 			document.removeEventListener("pointerdown", outside);
-			document.removeEventListener("keydown", escape);
+			document.removeEventListener("keydown", onKeyDown);
 		};
-	}, [open]);
+	}, [open, close]);
 	return (
 		<div
 			ref={picker}
@@ -65,7 +65,7 @@ export function SessionMenu(props: Props) {
 				}}
 			>
 				<span>{title}</span>
-				<span className="buying-ai-chat-chevron" aria-hidden="true">
+				<span className="buying-ai-chat-chevron">
 					<svg
 						viewBox="0 0 24 24"
 						width="18"
@@ -75,6 +75,7 @@ export function SessionMenu(props: Props) {
 						strokeWidth="2"
 						strokeLinecap="round"
 						strokeLinejoin="round"
+						aria-hidden="true"
 					>
 						<path d="m6 9 6 6 6-6" />
 					</svg>

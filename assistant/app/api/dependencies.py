@@ -1,6 +1,5 @@
 """请求身份验证及应用服务依赖。"""
 
-import asyncio
 from dataclasses import dataclass
 
 from fastapi import Request
@@ -20,10 +19,10 @@ class AuthenticatedUser:
     erp: ERPNext
 
 
-async def authenticate(command: Command) -> AuthenticatedUser:
+async def authenticate(command: Command, request: Request) -> AuthenticatedUser:
     """用请求中的 sid 向 ERPNext 核实身份，并设置请求日志的用户信息。"""
-    erp = ERPNext(command.sid.get_secret_value())
-    user = await asyncio.to_thread(erp.authenticate)
+    erp = ERPNext(command.sid.get_secret_value(), request.app.state.erpnext_http)
+    user = await erp.authenticate()
     context.user_id_ctx.set(user)
     return AuthenticatedUser((app_config.cfg.erpnext.site, user), erp)
 

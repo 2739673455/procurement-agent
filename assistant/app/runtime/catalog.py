@@ -1,17 +1,26 @@
 """从配置加载角色定义，并验证模型、工具、MCP、Skill 和成员引用。"""
 
 import json
+from collections.abc import Callable
+from importlib import import_module
+from inspect import iscoroutinefunction, signature
 from pathlib import Path
+from typing import cast
 from uuid import NAMESPACE_URL, uuid5
 
 import frontmatter
 from agentscope.agent import ContextConfig, ReActConfig
 from agentscope.mcp import MCPClient
+from agentscope.tool import ToolBase
 from omegaconf import OmegaConf
 from pydantic import Field, model_validator
+from pydantic_core import PydanticCustomError
 
 from app.config.app_config import CONFIG_DIR, ROOT_DIR, ConfigModel
 from app.errors.agent import AgentError
+from app.runtime.context import RunContext
+
+type ToolFactory = Callable[[RunContext], ToolBase]
 
 
 class AgentDefinition(ConfigModel):
@@ -22,7 +31,7 @@ class AgentDefinition(ConfigModel):
     prompt: str  # 相对于 Assistant 根目录的提示词文件。
     model: str | None  # 模型配置名；null 使用启用的模型。
     builtin_tools: list[str]  # 启用的框架工作空间工具。
-    tool_factories: list[str]  # 业务工具工厂名称。
+    tool_factories: list[str]  # 工厂函数路径，格式为 Python模块:函数名。
     mcps: list[str]  # mcp.yaml 中的服务名称。
     skills: list[str]  # resources/skills 下的 Skill 目录名称。
     members: list[str]  # 允许邀请的角色配置名。
@@ -55,9 +64,26 @@ class AgentDefinitions(ConfigModel):
 
 
 class MCPDefinitions(ConfigModel):
-    """MCP 连接配置，协议参数直接使用框架模型。"""
+    """从服务配置名生成客户端 name，其余参数使用框架原生结构。"""
 
     servers: dict[str, MCPClient]  # 服务配置名到原生 MCP 客户端配置的映射。
+
+    @model_validator(mode="before")
+    @classmethod
+    def assign_client_names(cls, data):
+        """在框架校验前补入 name，配置文件只声明外层服务名。"""
+        if not isinstance(data, dict) or not isinstance(data.get("servers"), dict):
+            return data
+        servers = {}
+        for name, config in data["servers"].items():
+            if not isinstance(config, dict):
+                raise PydanticCustomError(
+                    "mcp_config_type", "MCP 服务必须使用配置字典声明"
+                )
+            if "name" in config:
+                raise ValueError("MCP name 由外层服务配置名生成，无需填写")
+            servers[name] = {**config, "name": name}
+        return {**data, "servers": servers}
 
 
 def load_yaml(path: Path):
@@ -68,7 +94,7 @@ def load_yaml(path: Path):
 class AgentCatalog:
     """验证角色能力，并将用户与角色映射为稳定的框架 Agent ID。"""
 
-    def __init__(self, factories, *, definitions=None, mcps=None):
+    def __init__(self, *, definitions=None, mcps=None):
         """加载配置，验证业务能力和资源引用后供服务层装配。"""
         from app.config import app_config
 
@@ -78,10 +104,7 @@ class AgentCatalog:
         self.mcps = mcps or MCPDefinitions.model_validate(
             load_yaml(CONFIG_DIR / "mcp.yaml")
         )
-        for name, client in self.mcps.servers.items():
-            if client.name != name:
-                raise ValueError("MCP 配置名必须与客户端 name 一致")
-        self.factories = factories
+        self.factories: dict[str, ToolFactory] = {}
         for key, definition in self.definitions.agents.items():
             if set(definition.builtin_tools) - {
                 "Bash",
@@ -92,8 +115,9 @@ class AgentCatalog:
                 "Grep",
             }:
                 raise ValueError(f"角色 {key} 引用了未知工作空间工具")
-            if set(definition.tool_factories) - factories.keys():
-                raise ValueError(f"角色 {key} 引用了未知工具工厂")
+            for path in definition.tool_factories:
+                if path not in self.factories:
+                    self.factories[path] = self._load_factory(path)
             if set(definition.mcps) - self.mcps.servers.keys():
                 raise ValueError(f"角色 {key} 引用了未知 MCP 服务")
             if (
@@ -116,6 +140,28 @@ class AgentCatalog:
                 )
                 if metadata.get("name") != skill or not metadata.get("description"):
                     raise ValueError(f"角色 {key} 的 Skill 元数据无效")
+
+    @staticmethod
+    def _load_factory(path: str) -> ToolFactory:
+        """启动时导入同步工厂并校验调用签名，运行时传入认证上下文。"""
+        module, separator, name = path.partition(":")
+        if (
+            not separator
+            or not name.isidentifier()
+            or not all(part.isidentifier() for part in module.split("."))
+        ):
+            raise ValueError(f"工具工厂路径须为 Python模块:函数名：{path}")
+        try:
+            factory = getattr(import_module(module), name)
+        except (ImportError, AttributeError) as exc:
+            raise ValueError(f"无法加载工具工厂：{path}") from exc
+        if not callable(factory) or iscoroutinefunction(factory):
+            raise ValueError(f"工具工厂必须是接收运行上下文的同步函数：{path}")
+        try:
+            signature(factory).bind(None)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"工具工厂须接收一个运行上下文参数：{path}") from exc
+        return cast(ToolFactory, factory)
 
     @staticmethod
     def user_id(owner) -> str:

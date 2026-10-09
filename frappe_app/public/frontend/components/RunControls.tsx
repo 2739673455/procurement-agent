@@ -33,7 +33,7 @@ export function RunControls(props: Props) {
 				</ul>
 			)}
 			{props.confirmations.map((event) => (
-				<div key={event.reply_id} role="group" aria-label="工具权限确认">
+				<fieldset key={event.reply_id} aria-label="工具权限确认">
 					<p>以下工具需要确认：</p>
 					{event.tool_calls.map((call) => (
 						<details key={call.id}>
@@ -57,7 +57,7 @@ export function RunControls(props: Props) {
 					>
 						拒绝
 					</button>
-				</div>
+				</fieldset>
 			))}
 			{props.resumable && (
 				<button

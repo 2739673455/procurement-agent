@@ -3,35 +3,32 @@ import base64
 
 from agentscope.formatter import DeepSeekChatFormatter
 
-from app.config import app_config
-from app.contracts.sessions import Attachment, PageContext
+from app.contracts.sessions import PageContext
 from app.services.inputs import user_message
 
 
-def test_page_snapshot_text_and_image_preserved_with_display_metadata(monkeypatch):
-    model = app_config.cfg.lm_config.models[app_config.cfg.lm_config.active]
-    monkeypatch.setattr(model, "image_inputs", True)
+def test_attachment_paths_and_native_images_preserved():
     attachments = [
-        Attachment(
-            id="text",
-            name="notes.txt",
-            media_type="text/plain",
-            data=base64.b64encode("数量 3".encode()).decode(),
-        ),
-        Attachment(
-            id="image",
-            name="photo.png",
-            media_type="image/png",
-            data=base64.b64encode(b"fake-png").decode(),
-        ),
+        {
+            "name": "notes.txt",
+            "media_type": "text/plain",
+            "path": "/workspace/sessions/test/attachments/notes.txt",
+        },
+        {
+            "name": "photo.png",
+            "media_type": "image/png",
+            "path": "/workspace/sessions/test/attachments/photo.png",
+            "data": base64.b64encode(b"fake-png").decode(),
+        },
     ]
     message = user_message(
         "看看附件",
         PageContext(doctype="Item", doc={"item_code": "BOLT"}, is_dirty=True),
         attachments,
+        image_inputs=True,
     )
     text = message.get_text_content()
-    assert text is not None and "BOLT" in text and "数量 3" in text
+    assert text is not None and "BOLT" in text and attachments[0]["path"] in text
     formatted = asyncio.run(
         DeepSeekChatFormatter(input_types=["text/plain", "image/*"]).format([message])
     )
@@ -42,6 +39,7 @@ def test_page_snapshot_text_and_image_preserved_with_display_metadata(monkeypatc
     )
     assert message.metadata["display_text"] == "看看附件"
     assert "doc" not in message.metadata["page_context"]
-    assert all(
-        "data" not in attachment for attachment in message.metadata["attachments"]
-    )
+    assert all("data" not in item for item in message.metadata["attachments"])
+    text_only = user_message("查看", None, attachments, image_inputs=False)
+    assert "不支持图片" in (text_only.get_text_content() or "")
+    assert not any(block.type == "data" for block in text_only.content)

@@ -13,7 +13,7 @@ interface Props {
 	onInterrupt(): Promise<void>;
 	/** 上传选择的文件并加入待发送附件列表。 */
 	onUpload(files: File[]): Promise<void>;
-	/** 按文件记录 ID 从待发送列表移除附件。 */
+	/** 按文件名 从待发送列表移除附件。 */
 	onRemove(name: string): void;
 }
 /** 管理问题草稿、页面携带选项和附件，发送未成功时恢复草稿。 */
@@ -67,7 +67,7 @@ export function Composer(props: Props) {
 						disabled={props.busy || props.uploading}
 						onClick={() => props.onRemove(file.name)}
 					>
-						{file.file_name} ×
+						{file.name} ×
 					</button>
 				))}
 			</div>

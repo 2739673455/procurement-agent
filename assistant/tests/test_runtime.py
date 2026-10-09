@@ -8,15 +8,14 @@ from copy import deepcopy
 import pytest
 from agentscope.app._service import SessionStatus
 from agentscope.event import ConfirmResult, UserConfirmResultEvent
-from agentscope.mcp import MCPClient, StdioMCPConfig
 from agentscope.message import ToolCallBlock, ToolResultBlock
 from agentscope.permission import PermissionBehavior, PermissionDecision
 from agentscope.tool import FunctionTool, ToolChunk
 from test_runs import Model, command, response, run_turn, service_at, use_models, watch
 
-from app.agents.procurement import definition
 from app.errors.agent import AgentError
 from app.runtime.context import CONTROL_KEY
+from app.tools import items as item_tools
 
 
 def tool_response(name, arguments, identifier="call1"):
@@ -77,12 +76,12 @@ def test_native_permission_confirmation_and_parked_interrupt(monkeypatch, tmp_pa
     async def scenario():
         called = []
 
-        async def query_items(query: str) -> ToolChunk:
-            called.append(query)
+        async def query_items(filters: list[list[str]]) -> ToolChunk:
+            called.append(filters)
             return ToolChunk(content=[])
 
         monkeypatch.setattr(
-            definition,
+            item_tools,
             "create_items_tool",
             lambda _: FunctionTool(
                 query_items,
@@ -104,7 +103,7 @@ def test_native_permission_confirmation_and_parked_interrupt(monkeypatch, tmp_pa
             request = state["confirmations"][0]
             # 浏览器的参数不能覆盖数据库中已经审核的工具调用。
             forged = request.tool_calls[0].model_copy(
-                update={"input": '{"query":"forged"}'}
+                update={"input": '{"filters":[["item_code","=","forged"]]}'}
             )
             result = UserConfirmResultEvent(
                 reply_id=request.reply_id,
@@ -112,7 +111,7 @@ def test_native_permission_confirmation_and_parked_interrupt(monkeypatch, tmp_pa
             )
             await command(service, "confirm", identifier, confirmation=result)
             await service.runtime.chat_run_registry.get(identifier)
-            assert called == ["bolt"]
+            assert called == [[["item_code", "like", "%bolt%"]]]
             await run_turn(service, identifier, message="再查询")
             assert (await command(service, "messages", identifier))["confirmations"]
             await command(service, "interrupt", identifier)
@@ -120,7 +119,7 @@ def test_native_permission_confirmation_and_parked_interrupt(monkeypatch, tmp_pa
             assert state["resumable"] and not state["confirmations"]
             with pytest.raises(AgentError):
                 await command(service, "confirm", identifier, confirmation=result)
-            assert called == ["bolt"]
+            assert called == [[["item_code", "like", "%bolt%"]]]
 
     asyncio.run(scenario())
 
@@ -131,15 +130,16 @@ def test_native_team_context_controls_and_cleanup(monkeypatch, tmp_path):
     async def scenario():
         from agentscope.app._service import _chat
 
-        from app.agents.procurement.tools import items
         from app.runtime.models import register_model_client
+        from app.tools import items
 
         owners = []
-        monkeypatch.setattr(
-            items.items,
-            "query_items",
-            lambda erp, query, *, offset, limit: owners.append(erp) or {"items": []},
-        )
+
+        async def query(erp, **kwargs):
+            owners.append(erp)
+            return {"data": []}
+
+        monkeypatch.setattr(items.items, "query_items", query)
         member_entered = asyncio.Event()
         release_member = asyncio.Event()
         models = []
@@ -274,18 +274,28 @@ def test_native_mcp_and_skill_role_resources(monkeypatch, tmp_path):
         server.write_text(
             'from mcp.server.fastmcp import FastMCP\nmcp = FastMCP("test")\n@mcp.tool()\ndef echo(value: str) -> str:\n    return "mcp:" + value\nmcp.run()\n'
         )
-        client = MCPClient(
-            name="echo",
-            is_stateful=True,
-            mcp_config=StdioMCPConfig(command=sys.executable, args=[str(server)]),
-        )
-        catalog = AgentCatalog(definition.TOOL_FACTORIES)
+        catalog = AgentCatalog()
         definitions = catalog.definitions.model_copy(deep=True)
         definitions.agents["procurement"].mcps = ["echo"]
+        # 为另一个角色收敛能力，验证资源不会跨角色泄漏。
+        definitions.agents["item_researcher"].tool_factories = []
+        definitions.agents["item_researcher"].skills = []
         catalog = AgentCatalog(
-            definition.TOOL_FACTORIES,
             definitions=definitions,
-            mcps=MCPDefinitions(servers={"echo": client}),
+            mcps=MCPDefinitions.model_validate(
+                {
+                    "servers": {
+                        "echo": {
+                            "is_stateful": True,
+                            "mcp_config": {
+                                "type": "stdio_mcp",
+                                "command": sys.executable,
+                                "args": [str(server)],
+                            },
+                        }
+                    }
+                }
+            ),
         )
         model = Model([])
 
@@ -301,7 +311,7 @@ def test_native_mcp_and_skill_role_resources(monkeypatch, tmp_path):
             return response("完成")
 
         model._call_api = call
-        other = Model([response("文件分析")])
+        other = Model([response("资源检查完成")])
         queued_models = [model]
         use_models(monkeypatch, queued_models)
         app = create_runtime(
@@ -383,15 +393,17 @@ def test_native_mcp_and_skill_role_resources(monkeypatch, tmp_path):
                     skills[0].dir, "references", "fields.md"
                 )
             )
-            analyst = (await command(service, "create", agent_key="file_analyst"))["id"]
-            await run_turn(service, analyst, message="分析文件")
+            # 会话入口由服务端配置决定，切换入口后验证角色资源隔离。
+            catalog.definitions.default = "item_researcher"
+            researcher = (await command(service, "create"))["id"]
+            await run_turn(service, researcher, message="检查角色资源")
             assert other.tools is not None
             assert not any(
                 "echo" in tool["function"]["name"]
                 or tool["function"]["name"] == "query_items"
                 for tool in other.tools
             )
-            assert "item-query" not in str(other.inputs)
+            assert skills[0].dir not in str(other.inputs)
             assert not any(
                 isinstance(block, ToolCallBlock) and block.state == "asking"
                 for block in history[-1].content
@@ -405,3 +417,59 @@ def test_native_mcp_and_skill_role_resources(monkeypatch, tmp_path):
         assert not installed[0].is_connected
 
     asyncio.run(scenario())
+
+
+def test_mcp_yaml_uses_service_keys_as_client_names(tmp_path):
+    """配置名成为原生客户端名称，HTTP 和 STDIO 参数按原生结构传递。"""
+    from pydantic import ValidationError
+
+    from app.runtime.catalog import MCPDefinitions, load_yaml
+
+    path = tmp_path / "mcp.yaml"
+    path.write_text(
+        """servers:
+  files:
+    is_stateful: true
+    mcp_config:
+      type: stdio_mcp
+      command: python3
+      args: [/workspace/mcp/server.py]
+  documents:
+    is_stateful: false
+    mcp_config:
+      type: http_mcp
+      url: https://example.com/mcp
+    enable_tools: [search]
+    execution_timeout: 30
+""",
+        encoding="utf-8",
+    )
+    data = load_yaml(path)
+    assert isinstance(data, dict)
+    configured = MCPDefinitions.model_validate(data)
+    assert {key: client.name for key, client in configured.servers.items()} == {
+        "files": "files",
+        "documents": "documents",
+    }
+    assert "name" not in data["servers"]["files"]
+    assert configured.servers["documents"].enable_tools == ["search"]
+    assert configured.servers["documents"].execution_timeout == 30
+    data["servers"]["files"]["name"] = "files"
+    with pytest.raises(ValidationError, match="无需填写"):
+        MCPDefinitions.model_validate(data)
+
+
+def test_tool_factory_configuration_rejects_invalid_references():
+    """在启动时拒绝不存在的工厂、非函数引用和不接受上下文的函数。"""
+    from app.runtime.catalog import AgentCatalog
+
+    definitions = AgentCatalog().definitions.model_copy(deep=True)
+    for path in (
+        "items",
+        "app.tools.items:missing_factory",
+        "app.tools.items:logger",
+        "app.services.inputs:user_message",
+    ):
+        definitions.agents["procurement"].tool_factories = [path]
+        with pytest.raises(ValueError, match="工具工厂"):
+            AgentCatalog(definitions=definitions)
