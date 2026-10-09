@@ -21,6 +21,13 @@ initialize_bench() {
             --apps_path=/workspace/frappe_docker/development/apps-example.json frappe-bench </dev/null
     fi
     cd frappe-bench
+    # 准备 Bench 识别和运行所需的进程目录。
+    mkdir -p config/pids
+    # 镜像中的解释器路径变化时，重建 Bench 环境并安装 ERPNext 依赖。
+    if ! env/bin/python --version >/dev/null 2>&1; then
+        UV_VENV_CLEAR=1 bench setup env --python "$(pyenv which python)"
+        uv pip install --python env/bin/python -e apps/erpnext
+    fi
 }
 
 # 二、准备 App 源码链接，供 Bench 查找前端资源。

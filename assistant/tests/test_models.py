@@ -14,9 +14,9 @@ from agentscope.message import (
 from openai import AsyncOpenAI
 from pydantic import SecretStr
 
-from app.agent.model import ChatCompletionsModel, ChatCredential
 from app.config import app_config
 from app.config.app_config import ModelConfig
+from app.runtime.models import ChatCompletionsModel, ChatCredential
 
 
 @pytest.fixture
@@ -115,7 +115,7 @@ def test_deepseek_reasoning_and_tool_history_replay(make_model):
                 [
                     chunk({"reasoning_content": "已查到结果"}),
                     chunk({"content": "找到物料"}),
-                    chunk({}, "stop"),
+                    chunk({}, "cancel"),
                 ]
             )
 

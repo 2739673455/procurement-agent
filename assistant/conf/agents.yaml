@@ -1,0 +1,42 @@
+# 默认对话入口及预定义角色，能力引用由服务启动时验证。
+default: procurement
+agents:
+  procurement:
+    name: procurement_assistant
+    description: 结合单据和附件组织采购查询与分析。
+    prompt: app/agents/procurement/prompt.md
+    model: null # null 使用 lm_config.active。
+    builtin_tools: [Bash, Read, Write, Edit, Glob, Grep]
+    tool_factories: [items]
+    mcps: [] # 引用 mcp.yaml 的 servers 配置名。
+    skills: [item-query]
+    members: [item_researcher, file_analyst]
+    tool_offload: false # 工具在当前运行中等待，随任务中断或取消。
+    context: {} # 使用框架原生上下文配置。
+    react: {interruption_message: "任务已中断，可以继续。"}
+  item_researcher:
+    name: item_researcher
+    description: 按用户权限查询物料基础信息，并报告查询范围和结果。
+    prompt: app/agents/procurement/researcher.md
+    model: null
+    builtin_tools: [Read, Glob, Grep]
+    tool_factories: [items]
+    mcps: []
+    skills: [item-query]
+    members: []
+    tool_offload: false
+    context: {}
+    react: {interruption_message: "物料查询已中断。"}
+  file_analyst:
+    name: file_analyst
+    description: 在用户工作空间中读取和分析文件，并报告依据和局限。
+    prompt: app/agents/procurement/analyst.md
+    model: null
+    builtin_tools: [Bash, Read, Write, Edit, Glob, Grep]
+    tool_factories: []
+    mcps: []
+    skills: []
+    members: []
+    tool_offload: false
+    context: {}
+    react: {interruption_message: "文件分析已中断。"}

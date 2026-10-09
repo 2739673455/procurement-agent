@@ -13,6 +13,7 @@ dependencies = [
     "psycopg[binary]>=3.3.4,<4",
     "pypdf>=6,<7",
     "python-dotenv>=1.2.3",
+    "python-frontmatter>=1.1,<2",
     "sqlalchemy[asyncio]>=2.0.46,<3",
     "uvicorn>=0.52.4",
 ]

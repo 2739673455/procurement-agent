@@ -67,7 +67,8 @@ services:
       retries: 20
 
   frappe:
-    image: docker.io/frappe/bench:latest
+    # 固定镜像摘要，保证开发环境可复现。
+    image: docker.io/frappe/bench@sha256:2b2a5011e12d4593480bf8bc5425b60dffc05f0b984b1c0aa3669e541e58ed7e
     # If you want to build the current bench image the Containerfile is in this Repo.
     # build: ../../frappe_docker/images/bench
     init: true

@@ -88,6 +88,13 @@ class LanguageModelsConfig(ConfigModel):
         return self
 
 
+class RuntimeConfig(ConfigModel):
+    """所有角色共用的提示词时区及任务登录上下文有效期。"""
+
+    timezone: str = Field(min_length=1)  # 提示词注入使用的 IANA 时区。
+    context_ttl_seconds: float = Field(gt=0)  # 服务端内存中的任务登录上下文有效期。
+
+
 class AppConfig(ConfigModel):
     """应用配置根结构，与 YAML 的顶层分组对应。"""
 
@@ -97,6 +104,7 @@ class AppConfig(ConfigModel):
     erpnext: ERPNextConfig  # ERPNext 连接与站点配置。
     workspace: DockerWorkspaceConfig  # 按用户分配的 Docker 执行工作空间。
     lm_config: LanguageModelsConfig  # 模型集合及启用配置。
+    runtime: RuntimeConfig  # 所有 Agent 共用的运行配置。
 
 
 def load_config(config_file: Path = CONFIG_FILE) -> AppConfig:

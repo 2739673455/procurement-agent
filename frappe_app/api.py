@@ -14,16 +14,10 @@ from werkzeug.wrappers import Response
 
 def _stream_response(upstream):
     """逐行转发上游 SSE 数据和心跳，不等待整个 Agent 任务完成。"""
-    try:
-        with upstream:
-            yield from upstream
-    except (OSError, ValueError, HTTPException):
-        # 流式响应期间通过 SSE 错误事件通知页面，HTTP 响应头不可修改。
-        yield (
-            "data: "
-            + json.dumps({"type": "error", "error": "连接中断，请重新打开对话。"})
-            + "\n\n"
-        ).encode()
+    with upstream:
+        # 首帧使 WSGI 代理立即发送响应头，浏览器无需等待框架的空闲心跳。
+        yield b":\n\n"
+        yield from upstream
 
 
 # 将函数开放为 Frappe POST 接口，默认不允许访客调用。
@@ -35,8 +29,10 @@ def sessions(
     title="",
     page_context=None,
     attachments=None,
+    agent_key=None,
+    confirmation=None,
 ):
-    """代理会话操作：普通操作返回 JSON，发送消息和订阅返回 SSE 流。"""
+    """代理会话操作：订阅返回 SSE 长连接，其余操作返回 JSON。"""
     # 转发当前登录会话，供 Assistant 验证身份。
     payload = {
         "action": action,
@@ -45,6 +41,10 @@ def sessions(
         "title": title,
         "sid": frappe.session.sid,
     }
+    if action == "create":
+        payload["agent_key"] = agent_key
+    if action == "confirm":
+        payload["confirmation"] = frappe.parse_json(confirmation)
     if action == "send":
         payload["page_context"] = page_snapshot(page_context)
         payload["attachments"] = attachment_payloads(attachments)
@@ -62,7 +62,7 @@ def sessions(
     try:
         upstream = urlopen(request, timeout=35)
         # 普通响应的读取和 JSON 解析也属于上游请求过程。
-        if action not in ("send", "subscribe"):
+        if action != "subscribe":
             with upstream:
                 result = json.load(upstream)
                 if not isinstance(result, dict):

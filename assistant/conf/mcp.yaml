@@ -1,0 +1,5 @@
+# 使用 AgentScope 原生 MCPClient 结构配置服务，再由各角色按配置名引用。
+# STDIO 示例：name、is_stateful: true、mcp_config: {type: stdio_mcp, command: npx, args: [...]}
+# HTTP 示例：name、is_stateful: false、mcp_config: {type: http_mcp, url: "https://example.com/mcp"}
+# env 或 headers 中的密钥通过 ${oc.env:变量名} 引用，不写入模型消息和 AgentState。
+servers: {}

@@ -32,7 +32,9 @@ def create_items_tool(erp: ERPNext) -> FunctionTool:
             result = await asyncio.to_thread(
                 items.query_items,
                 erp,
-                {"query": query, "offset": offset, "limit": limit},
+                query,
+                offset=offset,
+                limit=limit,
             )
         except AgentError as exc:
             return ToolChunk(

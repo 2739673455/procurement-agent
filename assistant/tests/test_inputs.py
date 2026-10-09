@@ -6,10 +6,9 @@ from agentscope.formatter import DeepSeekChatFormatter
 from app.config import app_config
 from app.contracts.sessions import Attachment, PageContext
 from app.services.inputs import user_message
-from app.services.messages import public_messages
 
 
-def test_page_snapshot_text_and_image_preserved_but_not_exposed(monkeypatch):
+def test_page_snapshot_text_and_image_preserved_with_display_metadata(monkeypatch):
     model = app_config.cfg.lm_config.models[app_config.cfg.lm_config.active]
     monkeypatch.setattr(model, "image_inputs", True)
     attachments = [
@@ -41,7 +40,8 @@ def test_page_snapshot_text_and_image_preserved_but_not_exposed(monkeypatch):
         for item in formatted
         for block in item.get("content", [])
     )
-    visible = public_messages([message])[0]
-    assert visible["content"] == "看看附件"
-    assert "doc" not in visible["page_context"]
-    assert all("data" not in attachment for attachment in visible["attachments"])
+    assert message.metadata["display_text"] == "看看附件"
+    assert "doc" not in message.metadata["page_context"]
+    assert all(
+        "data" not in attachment for attachment in message.metadata["attachments"]
+    )

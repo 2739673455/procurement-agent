@@ -8,9 +8,11 @@ import aiodocker
 import pytest
 from agentscope.app.storage import AsyncSQLAlchemyStorage
 from agentscope.message import TextBlock, ToolResultState
-from test_runs import Model, collect, command, response, use_models
+from test_runs import Model, response, run_turn, use_models
 
-from app.agent import runtime
+from app.agents.procurement.definition import TOOL_FACTORIES
+from app.runtime import bootstrap as runtime
+from app.runtime.catalog import AgentCatalog
 from app.services.sessions import SessionService
 
 
@@ -24,14 +26,14 @@ def test_docker_user_isolation_and_session_directories(monkeypatch, tmp_path):
     host_file = tmp_path / "host-only.txt"
     host_file.write_text("host-only", encoding="utf-8")
     agents = {}
-    initialize_agent = runtime.ProcurementAgent.__init__
+    initialize_agent = runtime.RuntimeAgent.__init__
 
     def capture_agent(agent, **kwargs):
         """记录框架装配的 Agent，检查运行中实际绑定的工具实例。"""
         initialize_agent(agent, **kwargs)
         agents[agent.state.session_id] = agent
 
-    monkeypatch.setattr(runtime.ProcurementAgent, "__init__", capture_agent)
+    monkeypatch.setattr(runtime.RuntimeAgent, "__init__", capture_agent)
 
     async def tool_text(tool, **kwargs):
         """执行框架工具，校验成功并提取输出文本。"""
@@ -55,16 +57,17 @@ def test_docker_user_isolation_and_session_directories(monkeypatch, tmp_path):
         models = [Model([response("完成")]), Model([response("完成")])]
         use_models(monkeypatch, models.copy())
         app = runtime.create_runtime(
-            AsyncSQLAlchemyStorage(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}")
+            AsyncSQLAlchemyStorage(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}"),
+            catalog=AgentCatalog(TOOL_FACTORIES),
         )
         container_names = set()
         async with app.router.lifespan_context(app):
             service = SessionService(app.state)
             owner = ("site", "owner")
-            user_id, agent_id = service.identity(owner)
+            user_id, agent_id = service.agents.identity(owner)
             workspaces = []
             for session_owner in [owner, owner, ("site", "another-owner")]:
-                session_user, session_agent = service.identity(session_owner)
+                session_user, session_agent = service.agents.identity(session_owner)
                 session_id = (await service.create(session_owner))["id"]
                 record = await service.storage.get_session(
                     session_user, session_agent, session_id
@@ -81,12 +84,10 @@ def test_docker_user_isolation_and_session_directories(monkeypatch, tmp_path):
             assert first.workspace_id != other_user.workspace_id
             backend = first.get_backend()
             for current_session in [session_id, second_session]:
-                events = await collect(
-                    await command(service, "send", current_session, message="开始")
-                )
-                assert not [event for event in events if event["type"] == "error"], (
-                    events
-                )
+                events = await run_turn(service, current_session, message="开始")
+                assert not [
+                    event for event in events if event.get("finished_reason") == "error"
+                ], events
 
             first_tools = {
                 tool.name: tool
@@ -151,7 +152,7 @@ def test_docker_user_isolation_and_session_directories(monkeypatch, tmp_path):
             )
             assert await restored.get_backend().read_file(first_file) == b"session-A"
             assert await restored.get_backend().read_file(second_file) == b"session-B"
-            await service.delete(owner, session_id)
+            await service.delete(owner, session_id, "credential")
             assert not await restored.get_backend().file_exists(first_directory)
             assert await restored.get_backend().read_file(second_file) == b"session-B"
 

@@ -8,15 +8,8 @@ from app.errors.agent import AgentError
 FIELDS = ["name", "item_code", "item_name", "item_group", "stock_uom", "disabled"]
 
 
-def query_items(client: ERPNext, args):
+def query_items(client: ERPNext, query: str, *, offset: int = 0, limit: int = 20):
     """校验关键词和分页参数，按用户权限查询物料并标记是否有下一页。"""
-    if not isinstance(args, dict) or set(args) - {"query", "offset", "limit"}:
-        raise AgentError("Item 查询参数无效。")
-    query, offset, limit = (
-        args.get("query"),
-        args.get("offset", 0),
-        args.get("limit", 10),
-    )
     if not isinstance(query, str):
         raise AgentError("物料关键词须为文本。")
     if type(offset) is not int or offset < 0 or type(limit) is not int or limit < 1:

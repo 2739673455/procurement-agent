@@ -1,90 +1,47 @@
-"""ERPNext 会话业务：身份映射与展示协议，执行和存储由 AgentScope 管理。"""
+"""认证用户的会话入口；角色、运行与团队控制由各自服务组织。"""
 
 import asyncio
-import json
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import uuid4
 
-from agentscope.agent import ContextConfig, ReActConfig
-from agentscope.app._service import SessionStatus
-from agentscope.app.storage import (
-    AgentData,
-    AgentRecord,
-    ChatModelConfig,
-    SessionConfig,
-    SessionNaming,
-)
+from agentscope.app._router._session import stream_session_events
+from agentscope.app.storage import SessionConfig, SessionNaming
 
-from app.agent.model import ChatCredential
-from app.agent.prompts import SYSTEM
-from app.agent.runtime import erp_context
-from app.config import app_config
 from app.contracts.sessions import Command
 from app.errors.agent import AgentError
-from app.services.events import session_events
+from app.runtime.context import CONTROL_KEY
+from app.services.agents import AgentService
 from app.services.inputs import user_message
-from app.services.messages import public_messages
+from app.services.runs import RunService
+from app.services.teams import TeamService
 
 
 class SessionService:
-    """协调 ERPNext 用户会话操作，使用 AgentScope 执行任务和持久化数据。"""
+    """协调会话请求和并发操作，消息与执行状态使用框架原生存储。"""
 
     def __init__(self, runtime):
-        """绑定框架运行服务，并创建会话操作锁以协调并发请求。"""
+        """装配角色、团队及运行服务，并创建入口操作锁。"""
         self.runtime = runtime
         self.storage = runtime.storage
+        self.agents = AgentService(runtime)
+        self.teams = TeamService(runtime)
+        self.runs = RunService(runtime, self.teams)
         self._lock = asyncio.Lock()
 
-    @staticmethod
-    def identity(owner):
-        """将站点和用户名映射为框架用户标识与采购助手的固定 Agent ID。"""
-        user_id = json.dumps(owner, ensure_ascii=False, separators=(",", ":"))
-        return user_id, str(uuid5(NAMESPACE_URL, "procurement:" + user_id))
-
-    async def configure(self, user_id, agent_id):
-        """保存服务端模型配置引用，并配置当前用户的采购 Agent。"""
-        key = app_config.cfg.lm_config.active
-        credential = ChatCredential(
-            id=str(uuid5(NAMESPACE_URL, user_id + ":" + key)),
-            name=key,
-            config_key=key,
-        )
-        await self.storage.upsert_credential(user_id, credential)
-        await self.storage.upsert_agent(
-            user_id,
-            AgentRecord(
-                id=agent_id,
-                user_id=user_id,
-                data=AgentData(
-                    id=agent_id,
-                    name="procurement_assistant",
-                    system_prompt=SYSTEM,
-                    context_config=ContextConfig(),
-                    react_config=ReActConfig(interruption_message="已停止生成。"),
-                ),
-            ),
-        )
-        return ChatModelConfig(
-            type=credential.type,
-            credential_id=credential.id,
-            model=credential.settings.model,
-            parameters={},
-        )
-
     async def execute(self, command: Command, owner, erp):
-        """按入口协议分发请求，每项操作自行校验归属并控制并发。"""
+        """分发已认证请求，各操作分别检查会话归属和运行条件。"""
         match command.action:
+            case "agents":
+                return self.agents.list()
             case "list":
                 return await self.list(owner)
             case "create":
-                return await self.create(owner)
+                return await self.create(owner, command.agent_key)
             case "messages":
                 return await self.messages(owner, command.session_id)
             case "rename":
                 return await self.rename(owner, command.session_id, command.title)
             case "delete":
-                return await self.delete(owner, command.session_id)
-            case "stop":
-                return await self.stop(owner, command.session_id)
+                return await self.delete(owner, command.session_id, erp)
             case "send":
                 return await self.send(
                     owner,
@@ -96,40 +53,81 @@ class SessionService:
                 )
             case "subscribe":
                 return await self.subscribe(owner, command.session_id)
+            case "interrupt" | "cancel" | "resume" | "confirm":
+                async with self._lock:
+                    user_id, row = await self._get_session(owner, command.session_id)
+                    clients = {"erpnext": erp}
+                    match command.action:
+                        case "interrupt" | "cancel":
+                            return await self.runs.stop(
+                                user_id,
+                                row,
+                                clients,
+                                intent="interrupted"
+                                if command.action == "interrupt"
+                                else "cancelled",
+                            )
+                        case "resume":
+                            return await self.runs.resume(user_id, row, clients)
+                        case "confirm":
+                            if command.confirmation is None:
+                                raise AgentError("缺少工具确认事件。")
+                            return await self.runs.confirm(
+                                user_id, row, command.confirmation, clients
+                            )
 
     async def _get_session(self, owner, session_id):
-        """按站点和用户查找会话，供持有操作锁的方法调用。"""
+        """核实用户会话归属，团队内部会话通过团队范围操作。"""
         if session_id is None:
             raise AgentError("缺少会话 ID。")
-        user_id, agent_id = self.identity(owner)
-        row = await self.storage.get_session(user_id, agent_id, str(session_id))
-        if row is None:
+        user_id = self.agents.catalog.user_id(owner)
+        row = await self.storage.get_session(user_id, "", str(session_id))
+        references = {
+            self.agents.reference_session_id(user_id, key)
+            for key in self.agents.catalog.definitions.agents
+        }
+        if row is None or row.origin.type != "user" or row.id in references:
             raise AgentError("会话不存在或无权访问。", 404)
-        return user_id, agent_id, row
+        self.agents.catalog.definition(user_id, row.agent_id)
+        return user_id, row
 
     async def list(self, owner):
-        """列出用户所属的会话，按更新时间降序排列。"""
+        """列出全部入口角色的用户会话，排除框架团队及角色参考会话。"""
         async with self._lock:
-            user_id, agent_id = self.identity(owner)
-            rows = await self.storage.list_sessions(user_id, agent_id)
+            user_id = self.agents.catalog.user_id(owner)
+            sessions = []
+            for key, definition in self.agents.catalog.definitions.agents.items():
+                rows = await self.storage.list_sessions(
+                    user_id, self.agents.catalog.agent_id(user_id, key)
+                )
+                for row in rows:
+                    if (
+                        row.origin.type == "user"
+                        and row.id != self.agents.reference_session_id(user_id, key)
+                    ):
+                        sessions.append(
+                            {
+                                "id": row.id,
+                                "title": row.config.name,
+                                "updated_at": row.updated_at,
+                                "agent_key": key,
+                                "agent_name": definition.name,
+                            }
+                        )
             return {
-                "sessions": [
-                    {
-                        "id": row.id,
-                        "title": row.config.name,
-                        "updated_at": row.updated_at,
-                    }
-                    for row in sorted(
-                        rows, key=lambda row: row.updated_at, reverse=True
-                    )
-                ]
+                "sessions": sorted(
+                    sessions, key=lambda row: row["updated_at"], reverse=True
+                )
             }
 
-    async def create(self, owner):
-        """配置模型与 Agent，并创建用户所属的会话。"""
+    async def create(self, owner, agent_key=None):
+        """创建选定角色的会话，并将成员模型配置登记到原生邀请机制。"""
         async with self._lock:
-            user_id, agent_id = self.identity(owner)
-            model = await self.configure(user_id, agent_id)
+            key = agent_key or self.agents.catalog.definitions.default
+            if key not in self.agents.catalog.definitions.agents:
+                raise AgentError("角色不存在。", 404)
+            user_id, agent_id = self.agents.identity(owner, key)
+            models = await self.agents.configure_user(user_id)
             identifier = str(uuid4())
             workspace_id = await self.runtime.workspace_manager.assign_workspace_id(
                 user_id=user_id, agent_id=agent_id, session_id=identifier
@@ -141,16 +139,16 @@ class SessionService:
                     workspace_id=workspace_id,
                     name="新对话",
                     naming=SessionNaming(auto=False),
-                    chat_model_config=model,
+                    chat_model_config=models[key],
                 ),
                 session_id=identifier,
             )
             return {"id": row.id}
 
     async def messages(self, owner, session_id):
-        """读取持久化消息和运行状态。"""
+        """读取完整原生消息、团队状态、待确认调用以及恢复条件。"""
         async with self._lock:
-            user_id, agent_id, row = await self._get_session(owner, session_id)
+            user_id, row = await self._get_session(owner, session_id)
             history = []
             before = None
             while True:
@@ -161,82 +159,69 @@ class SessionService:
                 if not more:
                     break
                 before = page[0].id
-            status = await self.runtime.session_service.get_session_status(
-                user_id, agent_id, row.id
-            )
+            summary = await self.teams.summary(user_id, row)
             return {
-                "messages": public_messages(history),
-                "running": self.runtime.chat_run_registry.get(row.id) is not None
-                or status == SessionStatus.RUNNING,
+                "messages": history,
+                "intent": row.state.middle_context.get(CONTROL_KEY) or "active",
+                **summary,
+                "status": await self.runtime.session_service.get_session_status(
+                    user_id, row.agent_id, row.id
+                ),
+                "resumable": not summary["running"]
+                and await self.runs.resumable(user_id, row),
             }
 
     async def rename(self, owner, session_id, title):
-        """修改空闲会话的标题。"""
+        """修改整个任务范围空闲的会话标题。"""
         async with self._lock:
-            user_id, agent_id, row = await self._get_session(owner, session_id)
+            user_id, row = await self._get_session(owner, session_id)
             if not title.strip():
                 raise AgentError("标题不能为空。")
-            task = self.runtime.chat_run_registry.get(row.id)
-            if task is not None and not task.done():
-                raise AgentError("请等待本轮执行结束后再修改标题。", 409)
+            await self.runs.require_idle(user_id, row)
             row.config.name = title.strip()
             row.config.naming = SessionNaming(auto=False)
             await self.storage.upsert_session(
-                user_id, agent_id, row.config, session_id=row.id
+                user_id, row.agent_id, row.config, session_id=row.id
             )
             return {"ok": True}
 
-    async def delete(self, owner, session_id):
-        """通过框架取消运行并删除会话及其数据。"""
+    async def delete(self, owner, session_id, erp):
+        """停止整个任务后由框架删除会话、团队、消息及工作空间会话资源。"""
         async with self._lock:
-            user_id, agent_id, row = await self._get_session(owner, session_id)
-            await self.runtime.session_service.delete_session(user_id, agent_id, row.id)
-            return {"ok": True}
-
-    async def stop(self, owner, session_id):
-        """取消当前运行，并等待框架完成状态保存。"""
-        async with self._lock:
-            _, _, row = await self._get_session(owner, session_id)
-            task = self.runtime.chat_run_registry.get(row.id)
-            if task is not None:
-                await self.runtime.session_service.cancel_session_run(row.id)
-                await asyncio.gather(task, return_exceptions=True)
+            user_id, row = await self._get_session(owner, session_id)
+            await self.runs.stop(user_id, row, {"erpnext": erp}, intent="cancelled")
+            await self.runtime.session_service.delete_session(
+                user_id, row.agent_id, row.id
+            )
+            self.runtime.contexts.forget(row.id)
             return {"ok": True}
 
     async def send(self, owner, session_id, *, message, page_context, attachments, erp):
-        """整理输入并启动框架后台任务，返回本轮事件订阅。"""
+        """装配用户输入和角色配置，通过运行服务启动框架任务。"""
         async with self._lock:
-            user_id, agent_id, row = await self._get_session(owner, session_id)
+            user_id, row = await self._get_session(owner, session_id)
             if not message.strip():
                 raise AgentError("消息不能为空。")
-            registry = self.runtime.chat_run_registry
-            task = registry.get(row.id)
-            if task is not None and not task.done():
-                raise AgentError("当前对话正在执行。", 409)
-            row.config.chat_model_config = await self.configure(user_id, agent_id)
+            await self.runs.require_idle(user_id, row)
+            key, _ = self.agents.catalog.definition(user_id, row.agent_id)
+            models = await self.agents.configure_user(user_id)
+            row.config.chat_model_config = models[key]
             await self.storage.upsert_session(
-                user_id, agent_id, row.config, session_id=row.id
+                user_id, row.agent_id, row.config, session_id=row.id
             )
             incoming = await asyncio.to_thread(
                 user_message, message.strip(), page_context, attachments
             )
-            token = erp_context.set(erp)
-            try:
-                task = registry.spawn(
-                    self.runtime.chat_service.run(user_id, row.id, agent_id, incoming),
-                    session_id=row.id,
-                )
-            finally:
-                erp_context.reset(token)
-            return session_events(self.runtime, user_id, row.id, task)
+            return await self.runs.start(user_id, row, incoming, {"erpnext": erp})
 
     async def subscribe(self, owner, session_id):
-        """订阅会话事件，不启动新的 Agent 运行。"""
+        """核实归属并返回框架原生事件长连接。"""
         async with self._lock:
-            user_id, _, row = await self._get_session(owner, session_id)
-            return session_events(
-                self.runtime,
-                user_id,
-                row.id,
-                self.runtime.chat_run_registry.get(row.id),
+            user_id, row = await self._get_session(owner, session_id)
+            return await stream_session_events(
+                session_id=row.id,
+                agent_id=row.agent_id,
+                user_id=user_id,
+                storage=self.storage,
+                message_bus=self.runtime.message_bus,
             )

@@ -31,6 +31,11 @@ workspace:
   ttl_seconds: 3600 # 工作空间空闲多久后回收容器，单位为秒；保留挂载的工作文件。
   sweep_interval_seconds: 300 # 框架扫描空闲工作空间的间隔，单位为秒。
 
+# 所有角色共用的运行配置。
+runtime:
+  timezone: Asia/Shanghai # 提示词中时间信息使用的时区。
+  context_ttl_seconds: 3600 # 登录上下文有效期；恢复或发送时重新核验并绑定。
+
 # 模型选择及各模型的连接参数和能力配置。
 lm_config:
   active: deepseek-deepseek-flash # 当前使用的模型配置名，对应 models 中的条目。

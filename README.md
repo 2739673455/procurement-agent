@@ -14,9 +14,9 @@
 
 Assistant 使用 Python 3.13、uv、FastAPI 和 AgentScope 2。框架的 `ChatService` 负责 Agent 装配、推理循环、工具调用、消息与状态保存；`SessionService` 负责运行状态、取消和删除联动；`ChatRunRegistry` 与消息总线负责后台任务、会话互斥和事件分发。`AsyncSQLAlchemyStorage` 使用 `assistant/conf/app_config.yaml` 的 `postgresql` 连接，直接维护框架的会话、消息和状态表，启动时创建缺失的数据表。
 
-应用层负责 ERPNext 登录核验、站点／用户身份映射、物料工具、页面及附件输入和聊天展示协议。每轮通过框架工具工厂绑定当前用户的 ERPNext 客户端，登录凭据不写入状态或消息总线。模型通过框架凭据工厂装配，数据库仅保存配置引用；模型密钥从环境变量读取，支持通过 `assistant/conf/.env` 配置。模型参数在 `assistant/conf/app_config.yaml` 配置，调用协议为 Chat Completions。
+应用层负责 ERPNext 登录核验、站点／用户身份映射、物料工具、页面及附件输入。聊天历史直接返回 AgentScope 原生 `Msg`，发送返回原生 `ChatTriggerResponse`，订阅返回框架的 SSE 长连接；框架负责事件回放、心跳和订阅资源释放。前端使用官方 TypeScript SDK 的 `appendEvent()` 累积消息并渲染内容块，每个选中会话保持一条订阅，回复结束后继续接收后续运行事件；运行期间核对持久化状态，空闲时同步完整消息。会话操作保持单入口。每轮通过框架工具工厂绑定当前用户的 ERPNext 客户端，登录凭据不写入状态或消息总线。模型通过框架凭据工厂装配，数据库仅保存配置引用；模型密钥从环境变量读取，支持通过 `assistant/conf/.env` 配置。模型参数在 `assistant/conf/app_config.yaml` 配置，调用协议为 Chat Completions。
 
-消息总线使用框架的 `InMemoryMessageBus`，服务以单 worker 启动。关闭页面只结束订阅，后台任务继续执行；服务重启后可加载已保存的对话继续提问，不会自动续跑中断任务。采购 Agent 使用框架装配的完整工具集，并加入物料查询工具；大结果可由框架卸载到工作目录。工具自动转为后台任务的中间件不启用，工具结果在当前运行中等待；定时任务调度器不启用，框架管理路由不开放。
+消息总线使用框架的 `InMemoryMessageBus`，服务以单 worker 启动。关闭页面只结束订阅，后台任务继续执行；服务重启后可加载已保存的上下文继续执行，运行不会自动启动。各角色按配置装配工作空间工具、业务工具、MCP 和 Skill；大结果由框架卸载到工作目录。角色通过 `tool_offload` 决定是否启用框架工具后台执行，三个采购角色均设为 `false`；定时任务调度器不启用，框架管理路由不开放。
 
 执行环境使用 AgentScope 的 `DockerWorkspaceManager`，按用户分配容器。同一站点用户的会话共享容器；不同站点或用户使用不同容器。Bash 和内置文件工具在容器内执行；对应的 `assistant/data/workspaces/<workspace_id>/` 挂载为 `/workspace`，不提交 Git。每个会话首次执行时创建 `/workspace/sessions/<session_id>/work/`，作为 Bash 和文件搜索的默认目录，并向模型提供该路径。Agent 可通过绝对路径或相对路径访问同一容器内的其他目录；文件工具对绝对路径的要求遵循框架接口。同一用户的并发会话使用各自的工具后端和默认目录，不改变共享容器的工作目录。
 
@@ -26,22 +26,92 @@ Assistant 使用 Python 3.13、uv、FastAPI 和 AgentScope 2。框架的 `ChatSe
 
 - Buying 页面右下角的常驻入口和对话面板，样式跟随 ERPNext 主题。
 - 点击会话标题展开浮层菜单，支持新建、切换、删除会话；点击外部或按 Esc 收起。
-- 流式回复、发送／停止切换、错误提示和重试。关闭面板只断开订阅，重新打开可读取历史并恢复订阅。
+- 流式回复、开始／中断／恢复／取消、原生工具权限确认、团队成员状态和错误提示。关闭面板只断开订阅，重新打开可读取历史并恢复订阅。
 - 可选携带当前页面和未保存表单内容；服务端检查单据访问权限并过滤字段。
 - `query_items` 工具通过 ERPNext 原生接口查询当前用户有权访问的物料，结果可以跳转到 Item 页面。
 - Frappe 同源接口转发普通响应和事件流；Assistant 向 ERPNext 核实登录身份，会话按站点和用户归属隔离。
 - 日志、请求追踪和统一异常处理。
 - 附件上传、文本提取、PDF 解析和图片输入。
 
-业务接口优先复用 ERPNext 原生 API。Frappe App 按需补充页面集成和业务能力，不重复包装全部业务接口。Agent 层负责模型和工具装配，服务层负责会话及事件转换，客户端层负责外部连接。
+业务接口优先复用 ERPNext 原生 API。Frappe App 按需补充页面集成和业务能力，不重复包装全部业务接口。Agent 层负责模型和工具装配，服务层负责会话业务及原生事件订阅，客户端层负责外部连接。
 
 会话命名与 AgentScope 的 `session` 一致。Assistant 的单入口为 `POST /sessions`，通过 `action` 指定操作，`session_id` 标识会话；Frappe 代理入口为 `/api/method/buying_ai.api.sessions`。ERPNext 登录身份通过 `sid` 传递。
+
+## Agent 模板与扩展
+
+通用运行模块不依赖采购角色；`main.py` 在应用装配时注册业务工具工厂，采购助手及其成员使用同一运行基础。
+
+```text
+assistant/
+├── app/runtime/              # 角色目录、任务上下文、模型资源、工作空间及框架装配
+├── app/agents/procurement/   # 采购角色提示词、工具和工具工厂
+├── app/services/
+│   ├── agents.py            # 用户角色与模型配置登记
+│   ├── sessions.py          # 认证用户的会话操作
+│   ├── runs.py              # 开始、中断、恢复、取消及工具确认
+│   └── teams.py             # 原生团队范围及状态汇总
+├── conf/agents.yaml         # 默认角色与各角色的能力引用
+├── conf/mcp.yaml            # AgentScope 原生 MCPClient 配置
+└── resources/skills/        # 完整 Skill 目录，含 SKILL.md 和辅助文件
+```
+
+`agents.yaml` 声明角色名、说明、提示词文件、模型配置名、工作空间工具、业务工具工厂、MCP 服务、Skill、可邀请成员和运行策略。`model: null` 使用 `lm_config.active`；`context` 与 `react` 直接使用 AgentScope 的 `ContextConfig` 和 `ReActConfig`。启动时校验全部能力引用及 Skill 元数据，所有应用配置须显式提供。
+
+当前默认入口为 `procurement`；`item_researcher` 查询物料，`file_analyst` 分析工作空间文件。负责人按任务需要调用原生 `TeamCreate`、`AgentInvite`、`TeamSay` 和 `TeamDelete`；成员调用 `TeamSay` 报告。角色的 `members` 限制邀请范围，动态创建角色不开放。简单任务无需组建团队。
+
+框架邀请工具从成员自己的会话读取模型和工作空间，因此每个可邀请角色拥有一个原生配置参考会话。参考会话不运行任务，也不进入用户会话列表；团队成员使用独立的原生团队会话，解散团队只删除这些会话，预定义角色继续保留。
+
+新增 Agent 的步骤：
+
+1. 在 `app/agents/<业务>/` 编写提示词和业务工具，将工具工厂注册到应用装配入口。工厂接收 `RunContext`，从 `clients` 获取经过认证的业务客户端，返回框架原生工具。
+2. 在 `conf/agents.yaml` 声明角色及所需能力；将可协作角色填入负责人的 `members`。
+3. 需要 MCP 时在 `conf/mcp.yaml` 配置原生连接，在角色的 `mcps` 引用服务名。支持 STDIO 和 HTTP，工具启用范围、连接及执行超时均使用原生 MCPClient 字段。
+4. 需要 Skill 时在 `resources/skills/<名称>/` 放置 `SKILL.md` 及辅助文件。frontmatter 的 `name` 必须与目录名一致，并提供 `description`；在角色的 `skills` 引用名称。框架将完整目录复制到该用户角色的 Skill 分区并提供加载工具。
+
+HTTP MCP 示例；MCP 配置名与客户端 `name` 必须一致：
+
+```yaml
+servers:
+  documents:
+    name: documents
+    is_stateful: false
+    mcp_config:
+      type: http_mcp
+      url: https://example.com/mcp
+      headers:
+        Authorization: ${oc.env:DOCUMENTS_MCP_AUTHORIZATION}
+    enable_tools: [search]
+    execution_timeout: 30
+```
+
+`servers: {}` 表示没有外部 MCP 服务。连接配置和资源持久化由框架工作空间管理，MCP 的静态凭据会保存在相应连接配置中；ERPNext 登录客户端只保留在可信服务端内存，不作为静态 MCP 凭据写入工作空间。
+
+## 任务运行语义
+
+| action | 行为 |
+| --- | --- |
+| `agents` | 读取可用角色和默认入口。 |
+| `create` | 创建会话；`agent_key` 可选择角色，省略时使用默认入口。 |
+| `send` | 用新用户输入开始运行，并重新绑定认证客户端。 |
+| `interrupt` | 中断负责人及当前团队成员，等待框架保存上下文。 |
+| `resume` | 读取已保存上下文，通过原生空输入继续推理，不补发用户消息。 |
+| `cancel` | 结束当前任务并解散团队，保留负责人对话历史；继续使用会话须发送新消息。 |
+| `confirm` | 提交原生 `UserConfirmResultEvent`，恢复对应负责人或成员的工具调用。 |
+| `messages` | 读取原生消息、团队状态、待确认调用及可恢复条件。 |
+| `subscribe` | 订阅原生 SSE 事件长连接。 |
+| `list` / `rename` / `delete` | 管理用户会话；删除同时停止整个任务并清理其数据。 |
+
+恢复采用保存上下文后继续推理的语义，不恢复任意 Python 指令位置，也不重新运行已经完成的团队成员。框架负责工具调用与结果配对、权限等待、后台任务、原生团队通信、事件发布和 SQL 持久化。
+
+应用将运行意图保存在框架 `AgentState.middle_context` 的 `app.run_control` 中，取值为 `active`、`interrupted` 或 `cancelled`。这项状态用于阻止停止后的团队消息自动唤醒模型，团队提示保留为原生上下文供恢复使用；没有额外的运行表或自定义聊天事件格式。
+
+发送、恢复和确认都经过 ERPNext 身份核验。团队成员通过原生团队归属读取负责人绑定的客户端；`runtime.context_ttl_seconds` 限制登录上下文使用时长，失效或服务重启后须由认证请求重新绑定。模型客户端在请求触发及框架独立唤醒任务结束后释放，应用关闭时等待清理完成。多进程消息总线及跨进程认证上下文提供器不在当前单 worker 实现范围内。
 
 ## 附件与沙箱
 
 **Bash 和内置文件工具使用 Docker 工作空间。附件链路使用 Frappe 文件存储与读取权限；按上传者隔离的附件存储及基于附件 ID 的工具读取链路尚未实现。**
 
-工作空间容器仅挂载对应用户的工作空间，不挂载项目、Frappe 站点或 Docker socket。会话目录用于组织文件，同一用户的会话可以访问彼此的文件。容器使用 Docker 默认网络，网络访问策略和资源配额尚未配置；文件权限确认由框架处理，操作确认界面尚未实现。
+工作空间容器仅挂载对应用户的工作空间，不挂载项目、Frappe 站点或 Docker socket。会话目录用于组织文件，同一用户的会话可以访问彼此的文件。容器使用 Docker 默认网络，网络访问策略和资源配额尚未配置；文件权限确认由框架处理，面板提供允许本次调用和拒绝操作。
 
 ### 附件链路
 
@@ -88,7 +158,7 @@ sites/development.localhost/private/files/
 - 将获准使用的附件放入会话工作空间，并接入结果保存和下载接口。
 - 验证跨用户、跨会话访问被拒绝，Bash 无法访问沙箱外文件，重连和清理不会丢失应保留的数据。
 
-Markdown 渲染、工具执行卡片和操作确认等交互尚未实现。
+Markdown 富文本和完整工具执行卡片不在当前面板功能范围内。
 
 ## 本地开发
 
@@ -102,14 +172,16 @@ docker compose -f frappe_app/docker/compose.yaml logs -f frappe
 
 访问 `http://development.localhost:8000`。首次初始化的开发账号为 `Administrator`，密码为 `admin`；已有站点不会重置密码。
 
-`frappe_app/docker/start.sh` 按功能组织初始化、依赖安装、配置、站点准备和服务启动。Bench 与站点不存在时创建；依赖文件或工具版本变化时重新安装依赖；每次启动执行类型检查、前端构建和缓存刷新。无需手动进入容器初始化。
+`frappe_app/docker/start.sh` 按功能组织初始化、依赖安装、配置、站点准备和服务启动。Bench 与站点不存在时创建；镜像中的 Python 解释器路径变化导致虚拟环境不可用时，通过 Bench 重建环境；依赖文件或工具版本变化时重新安装依赖；每次启动执行类型检查、前端构建和缓存刷新。无需手动进入容器初始化。
+
+Bench 镜像在 Compose 中使用固定摘要。升级时拉取 `docker.io/frappe/bench:latest`，验证后更新摘要并重建 Frappe 容器；子模块更新与镜像升级分别执行。
 
 容器仅挂载 `frappe_app/`、`frappe_docker/development/` 和只读的 `frappe_app/docker/`。本机修改前端源码后，Bench 自动重新构建，刷新浏览器查看；修改构建入口时需要重启监听。`assistant/` 不挂载到 Frappe 容器。
 
 配置并启动 Assistant：
 
 1. 首次将 `assistant/conf/.env.example` 复制为 `assistant/conf/.env`，填写所用模型密钥和数据库密码；数据库凭据需与 `frappe_app/docker/compose.yaml` 中的 `postgres` 服务一致。
-2. 在 `assistant/conf/app_config.yaml` 中选择模型，确认 ERPNext、数据库、服务地址和 `workspace` 配置。Assistant 运行账户需要访问本机 Docker 服务；首次使用工作空间时，框架会拉取基础镜像并构建工具镜像，需要能访问镜像仓库和包源。
+2. 在 `assistant/conf/app_config.yaml` 中选择模型，确认 ERPNext、数据库、服务地址、`runtime` 和 `workspace` 配置；在 `agents.yaml` 组织角色能力，按需要填写 `mcp.yaml` 和 Skill 目录。Assistant 运行账户需要访问本机 Docker 服务；首次使用工作空间时，框架会拉取基础镜像并构建工具镜像，需要能访问镜像仓库和包源。
 3. 在仓库根目录执行：
 
 ```bash
@@ -117,13 +189,14 @@ uv sync --directory assistant --locked
 uv run --directory assistant python main.py
 ```
 
-运行回归测试和静态检查（测试使用模拟模型、隔离 SQLite 和本地测试工作空间，不调用真实模型或 ERPNext；真实 Docker 测试默认跳过）：
+运行回归测试和静态检查（测试使用模拟模型、隔离 SQLite、本地工作空间和临时 STDIO MCP 服务，不调用真实模型或 ERPNext；真实 Docker 测试默认跳过）：
 
 ```bash
 uv run --directory assistant python -m pytest -q
 uv run --directory assistant ruff check app main.py tests
 uv run --directory assistant pyright
 npm --prefix frappe_app run typecheck
+npm --prefix frappe_app test
 ```
 
 运行真实 Docker 集成测试，验证用户容器隔离、会话默认目录、跨会话文件访问、文件恢复、会话目录清理和容器释放：

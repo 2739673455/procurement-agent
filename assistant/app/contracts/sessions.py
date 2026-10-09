@@ -3,6 +3,7 @@
 from typing import Any, Literal
 from uuid import UUID
 
+from agentscope.event import UserConfirmResultEvent
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
@@ -34,9 +35,22 @@ class Command(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sid: SecretStr
     action: Literal[
-        "list", "create", "messages", "rename", "delete", "send", "subscribe", "stop"
+        "agents",
+        "list",
+        "create",
+        "messages",
+        "rename",
+        "delete",
+        "send",
+        "subscribe",
+        "interrupt",
+        "resume",
+        "cancel",
+        "confirm",
     ]
-    session_id: UUID | None = None  # list 和 create 不需要会话 ID，其余操作必须提供。
+    session_id: UUID | None = None  # agents、list 和 create 不需要会话 ID。
+    agent_key: str | None = None  # 创建会话时选择角色；空值使用默认角色。
+    confirmation: UserConfirmResultEvent | None = None  # 框架原生工具确认结果。
     message: str = ""
     title: str = Field(default="", max_length=64)
     page_context: PageContext | None = None

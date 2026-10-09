@@ -1,7 +1,19 @@
 {
-  "name": "buying-ai-ui",
-  "private": true,
-  "scripts": { "typecheck": "tsc --noEmit" },
-  "dependencies": { "react": "^19.2.0", "react-dom": "^19.2.0" },
-  "devDependencies": { "@types/react": "^19.2.0", "@types/react-dom": "^19.2.0", "typescript": "~5.9.3" }
+	"name": "buying-ai-ui",
+	"private": true,
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"test": "node --test tests/*.test.cjs"
+	},
+	"dependencies": {
+		"@agentscope-ai/agentscope": "0.0.15",
+		"react": "^19.2.0",
+		"react-dom": "^19.2.0"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.15",
+		"@types/react": "^19.2.0",
+		"@types/react-dom": "^19.2.0",
+		"typescript": "~5.9.3"
+	}
 }

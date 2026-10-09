@@ -9,13 +9,15 @@ from fastapi import FastAPI
 from loguru import logger
 from sqlalchemy import URL
 
-from app.agent.runtime import create_runtime
+from app.agents.procurement.definition import TOOL_FACTORIES
 from app.api.sessions import router
 from app.config import app_config
 from app.errors.base import ProblemDetails
 from app.errors.exc_handlers import register_exception_handlers
 from app.observability.log import setup_logger
 from app.observability.trace import TraceMiddleware
+from app.runtime.bootstrap import create_runtime
+from app.runtime.catalog import AgentCatalog
 from app.services.sessions import SessionService
 
 
@@ -36,7 +38,8 @@ async def lifespan(app):
         AsyncSQLAlchemyStorage(
             url.render_as_string(hide_password=False),
             engine_kwargs={"pool_pre_ping": True, "hide_parameters": True},
-        )
+        ),
+        catalog=AgentCatalog(TOOL_FACTORIES),
     )
     async with runtime.router.lifespan_context(runtime):
         app.state.sessions = SessionService(runtime.state)
