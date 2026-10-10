@@ -35,19 +35,3 @@ workspace:
 runtime:
   timezone: Asia/Shanghai # 提示词中时间信息使用的时区。
   context_ttl_seconds: 3600 # 登录上下文有效期；恢复或发送时重新核验并绑定。
-
-# 模型选择及各模型的连接参数和能力配置。
-lm_config:
-  active: deepseek-deepseek-flash # 当前使用的模型配置名，对应 models 中的条目。
-  # 可选模型配置集合。
-  models:
-    # DeepSeek 官方接口的模型配置。
-    deepseek-deepseek-flash:
-      model_provider: deepseek # 模型服务商，决定消息格式化方式。
-      model: deepseek-flash # 服务商提供的模型标识。
-      base_url: https://api.deepseek.com # 模型接口地址。
-      api_key: ${oc.env:DEEPSEEK_API_KEY} # 从环境变量读取必填的模型密钥。
-      timeout_seconds: 30 # 模型请求超时，单位为秒。
-      image_inputs: true # 是否支持图片输入。
-      context_size: 1048576 # AgentScope 上下文 token 预算；null 时使用 32768。
-      params: {} # 透传到 Chat Completions 请求体的附加参数，例如 thinking、reasoning_effort、max_tokens。

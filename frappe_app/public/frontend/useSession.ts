@@ -14,6 +14,7 @@ import { api, events, upload } from "./api";
 import { frappe, pageSnapshot } from "./frappe";
 import type {
 	Attachment,
+	BackgroundTool,
 	History,
 	PageContext,
 	Session,
@@ -30,6 +31,9 @@ export function useSession() {
 	const [busy, setBusy] = useState(false);
 	const [resumable, setResumable] = useState(false);
 	const [members, setMembers] = useState<TeamMember[]>([]);
+	const [backgroundTasks, setBackgroundTasks] = useState<
+		Record<string, BackgroundTool>
+	>({});
 	const [confirmations, setConfirmations] = useState<RequireUserConfirmEvent[]>(
 		[],
 	);
@@ -71,12 +75,13 @@ export function useSession() {
 			setSessions(data.sessions);
 		return data.sessions;
 	}
-	/** 使用框架状态更新任务控制和团队成员。 */
+	/** 使用框架状态更新任务控制和 Agent 团队成员。 */
 	function applyState(history: History) {
 		running.current = history.running;
 		setBusy(history.running);
 		setResumable(history.resumable);
 		setMembers(history.members);
+		setBackgroundTasks(history.background_tasks);
 		setConfirmations(history.confirmations);
 	}
 	/** 同步运行状态，空闲时以持久化消息为准；运行中的流式消息留在界面。 */
@@ -217,6 +222,7 @@ export function useSession() {
 		setBusy(false);
 		setResumable(false);
 		setMembers([]);
+		setBackgroundTasks({});
 		setConfirmations([]);
 		setError("");
 		setStatus("");
@@ -464,6 +470,7 @@ export function useSession() {
 		error,
 		resumable,
 		members,
+		backgroundTasks,
 		confirmations,
 		controlling,
 		confirm,

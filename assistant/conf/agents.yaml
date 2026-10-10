@@ -1,31 +1,45 @@
+# 可用模型的连接参数和能力配置，由各 Agent 的 model 引用。
+models:
+  # DeepSeek 官方接口的模型配置。
+  deepseek-deepseek-flash:
+    credential: # AgentScope 原生凭据，type 选择提供商模型类。
+      type: deepseek_credential # 使用 DeepSeek 原生模型。
+      base_url: https://api.deepseek.com # 模型接口地址。
+      api_key: ${oc.env:DEEPSEEK_API_KEY} # 从环境变量读取模型密钥。
+    model: deepseek-flash # 服务商提供的模型标识。
+    client_kwargs: # 请求客户端参数。
+      timeout: 30 # 请求超时，单位为秒。
+      max_retries: 0 # 请求重试次数。
+    image_inputs: true # 是否支持图片输入。
+    context_size: 1048576 # AgentScope 上下文 token 预算；null 时使用 32768。
+    params: {} # 原生模型 Parameters 字段，例如 thinking_enable、reasoning_effort、max_tokens。
+
 # 默认对话入口及预定义角色，能力引用由服务启动时验证。
 default: procurement
 agents:
   procurement:
-    name: procurement_assistant
+    name: 采购助手
     description: 结合单据和附件组织采购查询与分析。
     prompt: resources/prompts/procurement.md
-    model: null # null 使用 lm_config.active。
+    model: deepseek-deepseek-flash # 引用 models 中的模型配置名。
     builtin_tools: [Bash, Read, Write, Edit, Glob, Grep]
     tool_factories: # Python 模块:工厂函数；工厂接收 RunContext 并返回一个原生工具。
       - app.tools.items:create_items_tool
     mcps: [] # 引用 mcp.yaml 的 servers 配置名。
     skills: [item-query]
-    members: [item_researcher]
-    tool_offload: false # 工具在当前运行中等待，随任务中断或取消。
+    members: [item_researcher] # 允许通过 AgentInvite 邀请加入团队的其他 Agent。
     context: {} # 使用框架原生上下文配置。
-    react: {interruption_message: "任务已中断，可以继续。"}
+    react: { interruption_message: "任务已中断。" }
   item_researcher:
-    name: item_researcher
+    name: 物料查询助手
     description: 按用户权限查询物料基础信息，并报告查询范围和结果。
     prompt: resources/prompts/item_researcher.md
-    model: null
+    model: deepseek-deepseek-flash
     builtin_tools: [Read, Glob, Grep]
     tool_factories:
       - app.tools.items:create_items_tool
     mcps: []
     skills: [item-query]
     members: []
-    tool_offload: false
     context: {}
-    react: {interruption_message: "物料查询已中断。"}
+    react: { interruption_message: "任务已中断。" }

@@ -1,6 +1,6 @@
 """会话请求结构，由 FastAPI 解析和校验。"""
 
-from typing import Any, Literal
+from typing import Any, Literal, NotRequired, TypedDict
 from uuid import UUID
 
 from agentscope.event import UserConfirmResultEvent
@@ -25,6 +25,15 @@ class AttachmentUpload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=255)
     data: str = Field(repr=False)
+
+
+class AttachmentInfo(TypedDict):
+    """工作空间附件信息。"""
+
+    name: str
+    media_type: str
+    path: str
+    data: NotRequired[str]
 
 
 class Command(BaseModel):

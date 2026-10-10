@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from app.config.app_config import cfg
+from app.config.app import cfg
 from app.observability import context
 
 if TYPE_CHECKING:

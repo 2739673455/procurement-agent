@@ -8,6 +8,6 @@ class AgentError(ProblemError):
 
     type = "agent-error"
 
-    def __init__(self, message: str, status: int = 400):
+    def __init__(self, message: str, status: int = 400) -> None:
         """将业务提示作为错误标题，默认使用 HTTP 400 状态。"""
         super().__init__(title=message, status=status)

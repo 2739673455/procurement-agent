@@ -1,11 +1,12 @@
 import type { RequireUserConfirmEvent } from "@agentscope-ai/agentscope/event";
-import type { TeamMember } from "../types";
+import type { BackgroundTool, TeamMember } from "../types";
 
 /** 当前任务的恢复、取消和原生工具确认操作。 */
 interface Props {
 	busy: boolean;
 	resumable: boolean;
 	members: TeamMember[];
+	backgroundTasks: Record<string, BackgroundTool>;
 	confirmations: RequireUserConfirmEvent[];
 	disabled: boolean;
 	onResume(): Promise<void>;
@@ -13,7 +14,7 @@ interface Props {
 	onConfirm(event: RequireUserConfirmEvent, confirmed: boolean): Promise<void>;
 }
 
-/** 展示团队成员状态及框架权限请求，不转换聊天消息和事件。 */
+/** 展示成员 Agent 状态及框架权限请求，不转换聊天消息和事件。 */
 export function RunControls(props: Props) {
 	const labels: Record<string, string> = {
 		idle: "空闲",
@@ -23,8 +24,15 @@ export function RunControls(props: Props) {
 	};
 	return (
 		<div className="buying-ai-run-controls">
+			{Object.keys(props.backgroundTasks).length > 0 && (
+				<ul aria-label="后台工具">
+					{Object.entries(props.backgroundTasks).map(([id, task]) => (
+						<li key={id}>{task.tool_name}：后台执行中</li>
+					))}
+				</ul>
+			)}
 			{props.members.length > 0 && (
-				<ul aria-label="团队成员">
+				<ul aria-label="协作 Agent">
 					{props.members.map((member) => (
 						<li key={member.session_id}>
 							{member.name}：{labels[member.status] || member.status}

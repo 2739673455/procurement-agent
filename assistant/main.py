@@ -1,6 +1,7 @@
 """应用组件装配与本地服务启动入口。"""
 
 import subprocess
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import httpx
@@ -11,7 +12,7 @@ from loguru import logger
 from sqlalchemy import URL
 
 from app.api.sessions import router
-from app.config import app_config
+from app.config.app import cfg
 from app.errors.base import ProblemDetails
 from app.errors.exc_handlers import register_exception_handlers
 from app.observability.log import setup_logger
@@ -22,10 +23,10 @@ from app.services.sessions import SessionService
 
 
 @asynccontextmanager
-async def lifespan(app):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """初始化框架运行服务和业务 HTTP 连接池，在后台任务退出后释放连接。"""
     logger.info("开始初始化应用资源")
-    settings = app_config.cfg.postgresql
+    settings = cfg.postgresql
     url = URL.create(
         "postgresql+psycopg",
         username=settings.user,
@@ -41,7 +42,7 @@ async def lifespan(app):
         ),
         catalog=AgentCatalog(),
     )
-    erpnext = app_config.cfg.erpnext
+    erpnext = cfg.erpnext
     async with (
         httpx.AsyncClient(
             base_url=erpnext.base_url,
@@ -97,14 +98,14 @@ def listen_host(host: str) -> str:
         timeout=10,
     )
     if not result.stdout.strip():
-        raise RuntimeError("请在 conf/app_config.yaml 设置 server.host。")
+        raise RuntimeError("请在 conf/app.yaml 设置 server.host。")
     return result.stdout.strip()
 
 
 if __name__ == "__main__":
     uvicorn.run(
         app,
-        host=listen_host(app_config.cfg.server.host),
-        port=app_config.cfg.server.port,
+        host=listen_host(cfg.server.host),
+        port=cfg.server.port,
         access_log=False,
     )

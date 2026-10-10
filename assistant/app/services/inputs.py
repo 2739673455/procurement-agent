@@ -2,10 +2,18 @@
 
 import json
 
-from agentscope.message import Base64Source, DataBlock, TextBlock, UserMsg
+from agentscope.message import Base64Source, DataBlock, Msg, TextBlock, UserMsg
+
+from app.contracts.sessions import AttachmentInfo, PageContext
 
 
-def user_message(text, page_context, attachments, *, image_inputs):
+def user_message(
+    text: str,
+    page_context: PageContext | None,
+    attachments: list[AttachmentInfo],
+    *,
+    image_inputs: bool,
+) -> Msg:
     """提供附件路径供工具按需读取，支持视觉的模型同时接收图片内容。"""
     blocks: list[TextBlock | DataBlock] = [TextBlock(text=text)]
     if page_context is not None:

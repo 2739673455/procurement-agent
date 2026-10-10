@@ -10,7 +10,7 @@ from app.errors.agent import AgentError
 class ERPNext:
     """复用应用 HTTP 连接池，通过独立用户 Cookie 访问 ERPNext。"""
 
-    def __init__(self, sid: str, client: httpx.AsyncClient):
+    def __init__(self, sid: str, client: httpx.AsyncClient) -> None:
         """绑定用户凭据；连接池的创建和释放由应用生命周期负责。"""
         self.client = client
         self.headers = {"Cookie": "sid=" + sid}

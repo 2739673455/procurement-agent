@@ -11,13 +11,13 @@ from app.clients.erpnext.items import query_items
 from app.errors.agent import AgentError
 
 
-def test_shared_erpnext_pool_keeps_user_cookies_separate():
+def test_shared_erpnext_pool_keeps_user_cookies_separate() -> None:
     """并发认证及后续查询保留各自身份，不使用连接池收到的其他 Cookie。"""
 
-    async def scenario():
+    async def scenario() -> None:
         seen = []
 
-        async def handle(request):
+        async def handle(request: httpx.Request) -> httpx.Response:
             sid = request.headers["Cookie"]
             seen.append((request.url.path, sid))
             assert request.headers["Host"] == "erp.test"
@@ -58,11 +58,11 @@ def test_shared_erpnext_pool_keeps_user_cookies_separate():
     asyncio.run(scenario())
 
 
-def test_erpnext_reports_authentication_and_upstream_errors():
+def test_erpnext_reports_authentication_and_upstream_errors() -> None:
     """登录、权限、连接和响应错误转换为业务错误，保留适当的 HTTP 状态。"""
 
-    async def scenario():
-        def handle(request):
+    async def scenario() -> None:
+        def handle(request: httpx.Request) -> httpx.Response:
             case = request.headers["Cookie"].removeprefix("sid=")
             if case == "timeout":
                 raise httpx.ReadTimeout("timeout", request=request)

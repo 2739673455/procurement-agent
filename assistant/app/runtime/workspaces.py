@@ -1,9 +1,14 @@
 """在用户工作空间内，为每轮工具调用绑定当前会话的默认目录。"""
 
+from collections.abc import AsyncGenerator, Callable
 from copy import copy
+from typing import Any
 
+from agentscope.agent import Agent
+from agentscope.event import AgentEvent
+from agentscope.message import Msg
 from agentscope.middleware import MiddlewareBase
-from agentscope.tool import BackendBase, Bash, Edit, Glob, Grep, Read, Write
+from agentscope.tool import BackendBase, Bash, Edit, ExecResult, Glob, Grep, Read, Write
 from agentscope.workspace import WorkspaceBase
 
 from app.errors.agent import AgentError
@@ -12,7 +17,7 @@ from app.errors.agent import AgentError
 class SessionDirectoryBackend(BackendBase):
     """绑定会话执行目录，文件路径按框架原生约定传给工作空间后端。"""
 
-    def __init__(self, backend: BackendBase, directory: str):
+    def __init__(self, backend: BackendBase, directory: str) -> None:
         """绑定执行后端和目录；不改变用户共享后端的工作目录。"""
         self.backend = backend
         self.directory = directory
@@ -21,7 +26,13 @@ class SessionDirectoryBackend(BackendBase):
         """返回会话目录，供 Bash、Glob、Grep 确定默认执行或搜索位置。"""
         return self.directory
 
-    async def exec_shell(self, command, *, cwd=None, timeout=None):
+    async def exec_shell(
+        self,
+        command: list[str],
+        *,
+        cwd: str | None = None,
+        timeout: float | None = None,
+    ) -> ExecResult:
         """在指定目录或当前会话目录执行命令。"""
         return await self.backend.exec_shell(
             command,
@@ -41,12 +52,17 @@ class SessionDirectoryBackend(BackendBase):
 class SessionDirectoryMiddleware(MiddlewareBase):
     """为本轮文件工具设置会话目录，并向模型说明共享工作空间的访问方式。"""
 
-    def __init__(self, backend: SessionDirectoryBackend, workspace_root: str):
+    def __init__(self, backend: SessionDirectoryBackend, workspace_root: str) -> None:
         """保存本轮目录后端和用户工作空间根路径。"""
         self.backend = backend
         self.workspace_root = workspace_root
 
-    async def on_reply(self, agent, input_kwargs, next_handler):
+    async def on_reply(
+        self,
+        agent: Agent,
+        input_kwargs: dict[str, Any],
+        next_handler: Callable[..., AsyncGenerator[AgentEvent | Msg]],
+    ) -> AsyncGenerator[AgentEvent | Msg]:
         """绑定本轮工具副本，保留框架工具配置及其他工具组。"""
         for group in agent.toolkit.tool_groups:
             for index, tool in enumerate(group.tools):
@@ -60,7 +76,7 @@ class SessionDirectoryMiddleware(MiddlewareBase):
         async for event in next_handler(**input_kwargs):
             yield event
 
-    async def on_system_prompt(self, agent, current_prompt: str) -> str:
+    async def on_system_prompt(self, agent: Agent, current_prompt: str) -> str:
         """向模型提供默认工作目录及同一用户工作空间内的访问范围。"""
         return (
             current_prompt

@@ -58,6 +58,7 @@ export function AssistantPanel({ onClose }: { onClose(): void }) {
 				busy={chat.busy}
 				resumable={chat.resumable}
 				members={chat.members}
+				backgroundTasks={chat.backgroundTasks}
 				confirmations={chat.confirmations}
 				disabled={chat.loading || chat.controlling}
 				onResume={chat.resume}

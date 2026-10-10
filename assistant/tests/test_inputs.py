@@ -3,12 +3,12 @@ import base64
 
 from agentscope.formatter import DeepSeekChatFormatter
 
-from app.contracts.sessions import PageContext
+from app.contracts.sessions import AttachmentInfo, PageContext
 from app.services.inputs import user_message
 
 
-def test_attachment_paths_and_native_images_preserved():
-    attachments = [
+def test_attachment_paths_and_native_images_preserved() -> None:
+    attachments: list[AttachmentInfo] = [
         {
             "name": "notes.txt",
             "media_type": "text/plain",

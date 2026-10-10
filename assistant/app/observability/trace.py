@@ -25,7 +25,7 @@ def _identifier(value: str | None) -> str:
 class TraceMiddleware:
     """使用原生 ASGI 中间件，避免缓冲流式响应。"""
 
-    def __init__(self, app: ASGIApp):
+    def __init__(self, app: ASGIApp) -> None:
         """保存需要追踪的下游 ASGI 应用。"""
         self.app = app
 

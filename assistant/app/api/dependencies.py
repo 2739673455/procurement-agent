@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from fastapi import Request
 
 from app.clients.erpnext.client import ERPNext
-from app.config import app_config
+from app.config.app import cfg
 from app.contracts.sessions import Command
 from app.observability import context
 from app.services.sessions import SessionService
@@ -24,7 +24,7 @@ async def authenticate(command: Command, request: Request) -> AuthenticatedUser:
     erp = ERPNext(command.sid.get_secret_value(), request.app.state.erpnext_http)
     user = await erp.authenticate()
     context.user_id_ctx.set(user)
-    return AuthenticatedUser((app_config.cfg.erpnext.site, user), erp)
+    return AuthenticatedUser((cfg.erpnext.site, user), erp)
 
 
 def session_service(request: Request) -> SessionService:

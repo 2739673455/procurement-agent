@@ -1,52 +1,90 @@
 import asyncio
 import json
+from collections.abc import Callable
+from typing import Any, cast
 
 import httpx
 import pytest
 from agentscope.message import (
     AssistantMsg,
+    Msg,
     ThinkingBlock,
     ToolCallBlock,
     ToolResultBlock,
     ToolResultState,
     UserMsg,
 )
+from agentscope.model import ChatModelBase, ChatResponse, DeepSeekChatModel
 from openai import AsyncOpenAI
-from pydantic import SecretStr
+from pydantic import ValidationError
 
-from app.config import app_config
-from app.config.app_config import ModelConfig
-from app.runtime.models import ChatCompletionsModel, ChatCredential
+from app.config.agents import AgentDefinitions, ModelConfig, cfg
+from app.runtime.models import ChatCredential
+
+type ModelFactory = Callable[[dict[str, Any] | None], DeepSeekChatModel]
 
 
 @pytest.fixture
-def make_model(monkeypatch):
-    monkeypatch.setattr(
-        app_config.cfg.lm_config, "models", dict(app_config.cfg.lm_config.models)
-    )
+def make_model(monkeypatch: pytest.MonkeyPatch) -> ModelFactory:
+    monkeypatch.setattr(cfg, "models", dict(cfg.models))
 
-    def build(params=None):
-        app_config.cfg.lm_config.models["protocol-test"] = ModelConfig(
-            model_provider="deepseek",
-            model="test",
-            base_url="https://model.invalid",
-            api_key=SecretStr("test"),
-            params=params or {},
-            image_inputs=True,
-            context_size=32768,
-            timeout_seconds=30,
+    def build(params: dict[str, Any] | None = None) -> DeepSeekChatModel:
+        cfg.models["protocol-test"] = ModelConfig.model_validate(
+            {
+                "credential": {
+                    "type": "deepseek_credential",
+                    "base_url": "https://model.invalid",
+                    "api_key": "test",
+                },
+                "model": "test",
+                "client_kwargs": {"timeout": 30, "max_retries": 0},
+                "params": params or {},
+                "image_inputs": True,
+                "context_size": 32768,
+            }
         )
-        return ChatCompletionsModel(
-            credential=ChatCredential(
-                id="test-credential", name="test", config_key="protocol-test"
-            ),
-            model="test",
+        credential = ChatCredential(
+            id="test-credential", name="test", config_key="protocol-test"
+        )
+        return cast(
+            DeepSeekChatModel,
+            credential.get_chat_model_class()(credential=credential, model="test"),
         )
 
     return build
 
 
-def chunk(delta, finish_reason=None):
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"credential": {"type": "unknown_credential", "api_key": "test"}},
+        {"params": {"max_tokens": -1}},
+        {"params": {"reasoning_effort": "low"}},
+    ],
+)
+def test_invalid_provider_configuration_rejected(overrides: dict[str, Any]) -> None:
+    config = {
+        "credential": {"type": "deepseek_credential", "api_key": "test"},
+        "model": "test",
+        "client_kwargs": {},
+        "params": {},
+        "image_inputs": False,
+        "context_size": None,
+    }
+    with pytest.raises(ValidationError):
+        ModelConfig.model_validate({**config, **overrides})
+
+
+@pytest.mark.parametrize("reference", [None, "missing-model"])
+def test_agent_requires_declared_model(reference: str | None) -> None:
+    """Agent 必须显式引用 models 中已声明的模型，不能使用空值或未知配置名。"""
+    config = cfg.model_dump()
+    config["agents"][cfg.default]["model"] = reference
+    with pytest.raises(ValidationError, match="model|未知模型"):
+        AgentDefinitions.model_validate(config)
+
+
+def chunk(delta: dict[str, Any], finish_reason: str | None = None) -> dict[str, Any]:
     return {
         "id": "chat-1",
         "object": "chat.completion.chunk",
@@ -56,7 +94,7 @@ def chunk(delta, finish_reason=None):
     }
 
 
-def stream_response(chunks):
+def stream_response(chunks: list[dict[str, Any]]) -> httpx.Response:
     return httpx.Response(
         200,
         headers={"content-type": "text/event-stream"},
@@ -65,17 +103,18 @@ def stream_response(chunks):
     )
 
 
-async def final(model, messages):
+async def final(model: ChatModelBase, messages: list[Msg]) -> ChatResponse:
     result = await model(messages)
+    assert not isinstance(result, ChatResponse)
     chunks = [chunk async for chunk in result]
     return chunks[-1]
 
 
-def test_deepseek_reasoning_and_tool_history_replay(make_model):
-    async def scenario():
+def test_deepseek_reasoning_and_tool_history_replay(make_model: ModelFactory) -> None:
+    async def scenario() -> None:
         requests = []
 
-        def handler(request):
+        def handler(request: httpx.Request) -> httpx.Response:
             assert request.url.path == "/chat/completions"
             requests.append(json.loads(request.content))
             if len(requests) == 1:
@@ -120,7 +159,7 @@ def test_deepseek_reasoning_and_tool_history_replay(make_model):
             )
 
         model = make_model(
-            {"thinking": {"type": "enabled"}, "reasoning_effort": "high"}
+            {"thinking_enable": True, "reasoning_effort": "high", "max_tokens": 128}
         )
         await model.client.close()
         model.client = AsyncOpenAI(
@@ -153,6 +192,8 @@ def test_deepseek_reasoning_and_tool_history_replay(make_model):
             payload = requests[-1]
             assert payload["thinking"] == {"type": "enabled"}
             assert payload["reasoning_effort"] == "high"
+            assert payload["max_tokens"] == 128
+            assert "max_completion_tokens" not in payload
             assert payload["stream"] is True
             assistants = [m for m in payload["messages"] if m["role"] == "assistant"]
             assert [m["reasoning_content"] for m in assistants] == [

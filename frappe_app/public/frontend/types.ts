@@ -31,8 +31,15 @@ export interface History {
 	intent: string;
 	members: TeamMember[];
 	confirmations: RequireUserConfirmEvent[];
+	background_tasks: Record<string, BackgroundTool>;
 }
-/** 框架团队内成员会话的运行摘要。 */
+/** 框架后台工具注册表中的任务信息。 */
+export interface BackgroundTool {
+	tool_name: string;
+	agent_id: string;
+	started_at: number;
+}
+/** 框架 Agent 团队内成员 Agent 会话的运行摘要。 */
 export interface TeamMember {
 	agent_id: string;
 	session_id: string;

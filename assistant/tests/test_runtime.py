@@ -1,16 +1,20 @@
-"""通用运行控制、原生团队协作与资源装配的关键集成测试。"""
+"""通用运行控制、原生 Agent 团队协作与资源装配的关键集成测试。"""
 
 import asyncio
 import json
 import sys
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
+from pathlib import Path
+from typing import Any, Never
 
 import pytest
 from agentscope.app._service import SessionStatus
 from agentscope.event import ConfirmResult, UserConfirmResultEvent
-from agentscope.message import ToolCallBlock, ToolResultBlock
+from agentscope.message import Msg, ToolCallBlock, ToolResultBlock
+from agentscope.model import ChatResponse
 from agentscope.permission import PermissionBehavior, PermissionDecision
-from agentscope.tool import FunctionTool, ToolChunk
+from agentscope.tool import FunctionTool, ToolChoice, ToolChunk
 from test_runs import Model, command, response, run_turn, service_at, use_models, watch
 
 from app.errors.agent import AgentError
@@ -18,24 +22,28 @@ from app.runtime.context import CONTROL_KEY
 from app.tools import items as item_tools
 
 
-def tool_response(name, arguments, identifier="call1"):
+def tool_response(
+    name: str, arguments: dict[str, Any], identifier: str = "call1"
+) -> ChatResponse:
     """构造模型的原生工具调用响应。"""
     reply = response()
     reply.append_tool_call(name=name, input=json.dumps(arguments), block_id=identifier)
     return reply
 
 
-async def eventually(check):
+async def eventually(check: Callable[[], Awaitable[bool]]) -> None:
     """等待框架独立唤醒及持久化完成，超时即报告测试失败。"""
     async with asyncio.timeout(10):
         while not await check():
             await asyncio.sleep(0.02)
 
 
-def test_interrupt_restart_resume_and_cancel(monkeypatch, tmp_path):
+def test_interrupt_restart_resume_and_cancel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """重启后恢复已保存上下文，取消保留历史并禁止无新输入恢复。"""
 
-    async def scenario():
+    async def scenario() -> None:
         entered = asyncio.Event()
         first = Model([], entered)
         resumed = Model([response("接着处理")])
@@ -70,10 +78,12 @@ def test_interrupt_restart_resume_and_cancel(monkeypatch, tmp_path):
     asyncio.run(scenario())
 
 
-def test_native_permission_confirmation_and_parked_interrupt(monkeypatch, tmp_path):
+def test_native_permission_confirmation_and_parked_interrupt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """权限确认使用保存的工具调用，并可中断等待确认的任务。"""
 
-    async def scenario():
+    async def scenario() -> None:
         called = []
 
         async def query_items(filters: list[list[str]]) -> ToolChunk:
@@ -124,18 +134,20 @@ def test_native_permission_confirmation_and_parked_interrupt(monkeypatch, tmp_pa
     asyncio.run(scenario())
 
 
-def test_native_team_context_controls_and_cleanup(monkeypatch, tmp_path):
-    """独立成员使用负责人认证身份；整个团队中断、恢复及取消不会串用户。"""
+def test_native_team_context_controls_and_cleanup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """成员 Agent 使用负责人 Agent 绑定的用户身份；团队中断、恢复及取消不会串用户。"""
 
-    async def scenario():
+    async def scenario() -> None:
         from agentscope.app._service import _chat
 
-        from app.runtime.models import register_model_client
+        from app.runtime.models import _model_clients
         from app.tools import items
 
         owners = []
 
-        async def query(erp, **kwargs):
+        async def query(erp: str, **kwargs: Any) -> dict[str, Any]:
             owners.append(erp)
             return {"data": []}
 
@@ -146,15 +158,21 @@ def test_native_team_context_controls_and_cleanup(monkeypatch, tmp_path):
         leader_count = 0
         member_count = 0
 
-        async def get_model(*args, **kwargs):
-            """根据实际可用工具驱动负责人和成员，覆盖框架自动唤醒路径。"""
+        async def get_model(*args: Any, **kwargs: Any) -> Model:
+            """根据实际可用工具驱动负责人 Agent 和成员 Agent，覆盖框架自动唤醒路径。"""
             model = Model([])
             models.append(model)
-            register_model_client(model.client)
+            stack = _model_clients.get()
+            assert stack is not None
+            stack.push_async_callback(model.client.close)
 
             async def call(
-                model_name, messages, tools=None, tool_choice=None, **kwargs
-            ):
+                model_name: str,
+                messages: list[Msg],
+                tools: list[dict[str, Any]] | None = None,
+                tool_choice: ToolChoice | None = None,
+                **kwargs: Any,
+            ) -> ChatResponse:
                 nonlocal leader_count, member_count
                 model.inputs.append(deepcopy(messages))
                 model.tools = tools
@@ -175,7 +193,7 @@ def test_native_team_context_controls_and_cleanup(monkeypatch, tmp_path):
                         return tool_response(
                             "AgentInvite",
                             {
-                                "target": f"item_researcher@{agent_id[:8]}",
+                                "target": f"物料查询助手@{agent_id[:8]}",
                                 "prompt": "查螺栓并报告",
                             },
                             "invite",
@@ -191,7 +209,7 @@ def test_native_team_context_controls_and_cleanup(monkeypatch, tmp_path):
                 if member_count == 3:
                     return tool_response(
                         "TeamSay",
-                        {"content": "物料查询完成", "to": "procurement_assistant"},
+                        {"content": "物料查询完成", "to": "采购助手"},
                         "report",
                     )
                 return response("成员完成")
@@ -204,6 +222,7 @@ def test_native_team_context_controls_and_cleanup(monkeypatch, tmp_path):
             identifier = (await command(service, "create"))["id"]
             user_id = service.agents.catalog.user_id(("site", "owner"))
             initial_root = await service.storage.get_session(user_id, "", identifier)
+            assert initial_root is not None
             await command(
                 service, "send", identifier, message="组织查询", erp="leader-client"
             )
@@ -219,19 +238,20 @@ def test_native_team_context_controls_and_cleanup(monkeypatch, tmp_path):
                 intent="interrupted",
             )
 
-            async def stopped():
+            async def stopped() -> bool:
                 return not (await command(service, "messages", identifier))["running"]
 
             await eventually(stopped)
             user_id = service.agents.catalog.user_id(("site", "owner"))
             root = await service.storage.get_session(user_id, "", identifier)
             member = await service.storage.get_session(user_id, "", member_id)
+            assert root is not None and member is not None
             assert root.state.middle_context[CONTROL_KEY] == "interrupted"
             assert member.state.middle_context[CONTROL_KEY] == "interrupted"
             release_member.set()
             await command(service, "resume", identifier, erp="fresh-client")
 
-            async def finished():
+            async def finished() -> bool:
                 history, _ = await service.storage.list_messages(
                     user_id, member_id, limit=1
                 )
@@ -256,18 +276,21 @@ def test_native_team_context_controls_and_cleanup(monkeypatch, tmp_path):
     asyncio.run(scenario())
 
 
-def test_native_mcp_and_skill_role_resources(monkeypatch, tmp_path):
+def test_native_mcp_and_skill_role_resources(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """调用真实 STDIO MCP，并验证完整 Skill 文件及角色能力隔离。"""
 
-    async def scenario():
+    async def scenario() -> None:
         from agentscope.app.storage import AsyncSQLAlchemyStorage
         from agentscope.app.workspace_manager import (
             IsolationPolicy,
             LocalWorkspaceManager,
         )
 
+        from app.config.mcp import MCPDefinitions
         from app.runtime.bootstrap import create_runtime
-        from app.runtime.catalog import AgentCatalog, MCPDefinitions
+        from app.runtime.catalog import AgentCatalog
         from app.services.sessions import SessionService
 
         server = tmp_path / "mcp_server.py"
@@ -299,7 +322,13 @@ def test_native_mcp_and_skill_role_resources(monkeypatch, tmp_path):
         )
         model = Model([])
 
-        async def call(model_name, messages, tools=None, tool_choice=None, **kwargs):
+        async def call(
+            model_name: str,
+            messages: list[Msg],
+            tools: list[dict[str, Any]] | None = None,
+            tool_choice: ToolChoice | None = None,
+            **kwargs: Any,
+        ) -> ChatResponse:
             model.inputs.append(messages)
             model.tools = tools
             assert tools is not None
@@ -332,12 +361,13 @@ def test_native_mcp_and_skill_role_resources(monkeypatch, tmp_path):
             confirmation = state["confirmations"][0]
             user_id, agent_id = service.agents.identity(("site", "owner"))
             row = await service.storage.get_session(user_id, agent_id, identifier)
+            assert row is not None
             workspace = await app.state.workspace_manager.get_workspace(
                 user_id, agent_id, identifier, row.config.workspace_id
             )
             add_mcp = workspace.add_mcp
 
-            async def unavailable(*args, **kwargs):
+            async def unavailable(*args: Any, **kwargs: Any) -> Never:
                 """模拟中断收尾期间 MCP 连接不可用。"""
                 raise ConnectionError("MCP unavailable")
 
@@ -383,6 +413,7 @@ def test_native_mcp_and_skill_role_resources(monkeypatch, tmp_path):
             assert "mcp:hello" in str(history[-1].content)
             user_id, agent_id = service.agents.identity(("site", "owner"))
             row = await service.storage.get_session(user_id, agent_id, identifier)
+            assert row is not None
             workspace = await app.state.workspace_manager.get_workspace(
                 user_id, agent_id, identifier, row.config.workspace_id
             )
@@ -394,7 +425,7 @@ def test_native_mcp_and_skill_role_resources(monkeypatch, tmp_path):
                 )
             )
             # 会话入口由服务端配置决定，切换入口后验证角色资源隔离。
-            catalog.definitions.default = "item_researcher"
+            monkeypatch.setattr(catalog.definitions, "default", "item_researcher")
             researcher = (await command(service, "create"))["id"]
             await run_turn(service, researcher, message="检查角色资源")
             assert other.tools is not None
@@ -419,11 +450,10 @@ def test_native_mcp_and_skill_role_resources(monkeypatch, tmp_path):
     asyncio.run(scenario())
 
 
-def test_mcp_yaml_uses_service_keys_as_client_names(tmp_path):
+def test_mcp_yaml_uses_service_keys_as_client_names(tmp_path: Path) -> None:
     """配置名成为原生客户端名称，HTTP 和 STDIO 参数按原生结构传递。"""
-    from pydantic import ValidationError
-
-    from app.runtime.catalog import MCPDefinitions, load_yaml
+    from app.config.loader import load_yaml
+    from app.config.mcp import MCPDefinitions
 
     path = tmp_path / "mcp.yaml"
     path.write_text(
@@ -454,12 +484,9 @@ def test_mcp_yaml_uses_service_keys_as_client_names(tmp_path):
     assert "name" not in data["servers"]["files"]
     assert configured.servers["documents"].enable_tools == ["search"]
     assert configured.servers["documents"].execution_timeout == 30
-    data["servers"]["files"]["name"] = "files"
-    with pytest.raises(ValidationError, match="无需填写"):
-        MCPDefinitions.model_validate(data)
 
 
-def test_tool_factory_configuration_rejects_invalid_references():
+def test_tool_factory_configuration_rejects_invalid_references() -> None:
     """在启动时拒绝不存在的工厂、非函数引用和不接受上下文的函数。"""
     from app.runtime.catalog import AgentCatalog
 

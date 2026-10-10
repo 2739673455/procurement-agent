@@ -1,14 +1,16 @@
 """整理当前页面的表单快照。"""
 
+from typing import Any
+
 import frappe
 
 
-def page_snapshot(value):
+def page_snapshot(value: str | dict[str, Any] | None) -> dict[str, Any] | None:
     """校验单据访问权限并过滤表单字段；快照内容由用户提交。"""
     if not value:
         return None
     page = frappe.parse_json(value)
-    result = {
+    result: dict[str, Any] = {
         "route": page.get("route", []),
         "doctype": page.get("doctype"),
         "name": page.get("name"),
@@ -26,9 +28,9 @@ def page_snapshot(value):
     document.check_permission("create" if result["is_new"] else "read")
     levels = document.get_permlevel_access("read")
 
-    def fields(doctype, data):
+    def fields(doctype: str, data: dict[str, Any]) -> dict[str, Any]:
         """按字段访问级别过滤业务数据，并递归整理子表。"""
-        output = {}
+        output: dict[str, Any] = {}
         for df in frappe.get_meta(doctype).fields:
             if (
                 df.fieldtype == "Password"

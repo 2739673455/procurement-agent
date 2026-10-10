@@ -1,29 +1,49 @@
 """角色资源装配与运行意图中间件，复用框架工作空间和 Toolkit。"""
 
 import asyncio
+from collections.abc import AsyncGenerator, Callable
+from typing import Any
 from weakref import WeakKeyDictionary
 
+from agentscope.agent import Agent
 from agentscope.app._tool import AgentInvite
-from agentscope.app.message_bus import MessageBusKeys
-from agentscope.event import UserInterruptEvent
+from agentscope.app.message_bus import MessageBus, MessageBusKeys
+from agentscope.app.storage import AgentRecord, StorageBase
+from agentscope.app.workspace_manager import WorkspaceManagerBase
+from agentscope.event import AgentEvent, UserInterruptEvent
 from agentscope.mcp import MCPClient
-from agentscope.message import HintBlock
+from agentscope.message import HintBlock, Msg
 from agentscope.middleware import MiddlewareBase
+from agentscope.workspace import WorkspaceBase
 
-from app.config.app_config import ROOT_DIR
-from app.runtime.context import CONTROL_KEY
+from app.config.agents import AgentDefinition
+from app.config.loader import ROOT_DIR
+from app.runtime.catalog import AgentCatalog
+from app.runtime.context import CONTROL_KEY, ContextRegistry, RunContext
 
 
 class AgentResources:
     """将角色的 Skill 与 MCP 配置装配到框架的 Agent／会话资源分区。"""
 
-    def __init__(self, catalog):
-        """保存角色目录及资源装配锁，避免并发成员重复安装 Skill。"""
+    def __init__(self, catalog: AgentCatalog) -> None:
+        """保存角色目录及资源装配锁，避免并发成员 Agent 重复安装 Skill。"""
         self.catalog = catalog
-        self.locks: WeakKeyDictionary = WeakKeyDictionary()
-        self.configured: WeakKeyDictionary = WeakKeyDictionary()
+        self.locks: WeakKeyDictionary[WorkspaceBase, dict[str, asyncio.Lock]] = (
+            WeakKeyDictionary()
+        )
+        self.configured: WeakKeyDictionary[WorkspaceBase, set[tuple[str, str]]] = (
+            WeakKeyDictionary()
+        )
 
-    async def equip(self, workspace, agent_id, session_id, definition, *, active=True):
+    async def equip(
+        self,
+        workspace: WorkspaceBase,
+        agent_id: str,
+        session_id: str,
+        definition: AgentDefinition,
+        *,
+        active: bool = True,
+    ) -> None:
         """使用框架接口复制完整 Skill 目录，并为会话登记原生 MCP 客户端。"""
         locks = self.locks.setdefault(workspace, {})
         async with locks.setdefault(agent_id, asyncio.Lock()):
@@ -65,22 +85,22 @@ class AgentResources:
 
 
 class RoleMiddleware(MiddlewareBase):
-    """按角色限制工具和资源，并使用原生邀请工具组织允许的团队成员。"""
+    """按角色限制工具和资源，并使用原生 AgentInvite 工具邀请允许协作的 Agent。"""
 
     def __init__(
         self,
-        definition,
+        definition: AgentDefinition,
         *,
-        catalog,
-        storage,
-        message_bus,
-        workspace_manager,
-        user_id,
-        agent_id,
-        session_id,
-        business_tools,
-    ):
-        """保存角色能力以及构造框架邀请工具所需的资源。"""
+        catalog: AgentCatalog,
+        storage: StorageBase,
+        message_bus: MessageBus,
+        workspace_manager: WorkspaceManagerBase,
+        user_id: str,
+        agent_id: str,
+        session_id: str,
+        business_tools: set[str],
+    ) -> None:
+        """保存角色能力以及构造框架 AgentInvite 工具所需的资源。"""
         self.definition = definition
         self.catalog = catalog
         self.storage = storage
@@ -91,18 +111,21 @@ class RoleMiddleware(MiddlewareBase):
         self.session_id = session_id
         self.business_tools = business_tools
 
-    async def on_reply(self, agent, input_kwargs, next_handler):
+    async def on_reply(
+        self,
+        agent: Agent,
+        input_kwargs: dict[str, Any],
+        next_handler: Callable[..., AsyncGenerator[AgentEvent | Msg]],
+    ) -> AsyncGenerator[AgentEvent | Msg]:
         """在执行前收敛能力范围；工具执行与权限判断仍由框架负责。"""
         allowed = (
             set(self.definition.builtin_tools)
             | self.business_tools
-            | {"TaskCreate", "TaskList", "TaskGet", "TaskUpdate", "TeamSay"}
+            | {"TaskCreate", "TaskList", "TaskGet", "TaskUpdate", "TeamSay", "ToolStop"}
         )
-        if self.definition.tool_offload:
-            allowed.add("ToolStop")
         if self.definition.members:
             allowed |= {"TeamCreate", "TeamDelete", "AgentInvite"}
-        pool = []
+        pool: list[AgentRecord] = []
         for key in self.definition.members:
             member = await self.storage.get_agent(
                 self.user_id, self.catalog.agent_id(self.user_id, key)
@@ -135,15 +158,25 @@ class RoleMiddleware(MiddlewareBase):
 
 
 class RunControlMiddleware(MiddlewareBase):
-    """阻止已中断或取消任务的自动续跑，保留原生团队提示供恢复时使用。"""
+    """阻止已中断或取消任务的自动续跑，保留原生 Agent 团队提示供恢复时使用。"""
 
-    def __init__(self, contexts, context, message_bus):
+    def __init__(
+        self,
+        contexts: ContextRegistry,
+        context: RunContext,
+        message_bus: MessageBus,
+    ) -> None:
         """绑定当前任务上下文及框架消息总线。"""
         self.contexts = contexts
         self.context = context
         self.message_bus = message_bus
 
-    async def on_reply(self, agent, input_kwargs, next_handler):
+    async def on_reply(
+        self,
+        agent: Agent,
+        input_kwargs: dict[str, Any],
+        next_handler: Callable[..., AsyncGenerator[AgentEvent | Msg]],
+    ) -> AsyncGenerator[AgentEvent | Msg]:
         """允许显式中断事件收尾；被阻止的唤醒只保存队列提示，不调用模型。"""
         intent = self.contexts.intents.get(
             self.context.root_session_id, self.context.intent

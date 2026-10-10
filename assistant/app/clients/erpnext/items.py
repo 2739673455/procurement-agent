@@ -18,7 +18,7 @@ async def query_items(
     order_by: str | None = None,
     limit_start: int = 0,
     limit_page_length: int = 20,
-):
+) -> dict[str, Any]:
     """发送 Item 列表接口参数，返回 ERPNext 的原生 JSON 响应。"""
     params: dict[str, int | str] = {
         "limit_start": limit_start,

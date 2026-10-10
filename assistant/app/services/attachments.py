@@ -4,6 +4,12 @@ import base64
 import binascii
 import mimetypes
 
+from agentscope.app.storage import SessionRecord
+from agentscope.app.workspace_manager import WorkspaceManagerBase
+from agentscope.tool import BackendBase
+from agentscope.workspace import WorkspaceBase
+
+from app.contracts.sessions import AttachmentInfo, AttachmentUpload
 from app.errors.agent import AgentError
 from app.runtime.workspaces import session_directory
 
@@ -13,11 +19,11 @@ IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 class AttachmentService:
     """管理会话附件，同名上传覆盖，文件生命周期随会话目录。"""
 
-    def __init__(self, workspace_manager):
+    def __init__(self, workspace_manager: WorkspaceManagerBase) -> None:
         """绑定与 Agent 执行相同的工作空间管理器。"""
         self.workspace_manager = workspace_manager
 
-    async def _workspace(self, user_id, row):
+    async def _workspace(self, user_id: str, row: SessionRecord) -> WorkspaceBase:
         """根据已认证会话获取用户工作空间。"""
         return await self.workspace_manager.get_workspace(
             user_id, row.agent_id, row.id, row.config.workspace_id
@@ -36,7 +42,7 @@ class AttachmentService:
         return name
 
     @staticmethod
-    def _metadata(backend, directory, name):
+    def _metadata(backend: BackendBase, directory: str, name: str) -> AttachmentInfo:
         """根据文件名生成类型和路径，消息元数据使用同一来源。"""
         return {
             "name": name,
@@ -44,7 +50,9 @@ class AttachmentService:
             "path": backend.join_path(directory, name),
         }
 
-    async def save(self, user_id, row, upload):
+    async def save(
+        self, user_id: str, row: SessionRecord, upload: AttachmentUpload
+    ) -> AttachmentInfo:
         """把原始内容写入会话附件目录，同名文件直接覆盖。"""
         name = self._name(upload.name)
         try:
@@ -63,7 +71,9 @@ class AttachmentService:
         await backend.write_file(metadata["path"], content)
         return metadata
 
-    async def load(self, user_id, row, names):
+    async def load(
+        self, user_id: str, row: SessionRecord, names: list[str]
+    ) -> list[AttachmentInfo]:
         """读取当前会话中的文件，仅将图片原始内容补入模型输入。"""
         if not names:
             return []
@@ -73,7 +83,7 @@ class AttachmentService:
         directory = backend.join_path(
             session_directory(workspace, row.id), "attachments"
         )
-        files = []
+        files: list[AttachmentInfo] = []
         for name in names:
             item = self._metadata(backend, directory, name)
             exists = await backend.exec_shell(["test", "-f", item["path"]])

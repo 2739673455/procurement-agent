@@ -286,6 +286,9 @@ test("运行控制提交独立动作和原生确认结果，界面显示恢复�
 				{ session_id: "worker", name: "分析员", status: "awaiting_permission" },
 			],
 			confirmations: [confirmation],
+			backgroundTasks: {
+				tool: { tool_name: "query_items", agent_id: "worker", started_at: 0 },
+			},
 			onResume() {},
 			onCancel() {},
 			onConfirm() {},
@@ -296,6 +299,7 @@ test("运行控制提交独立动作和原生确认结果，界面显示恢复�
 	assert.match(html, /允许本次调用/);
 	assert.match(html, /<fieldset aria-label="工具权限确认">/);
 	assert.match(html, /分析员：等待确认/);
+	assert.match(html, /query_items：后台执行中/);
 	assert.match(html, /echo hello/);
 });
 

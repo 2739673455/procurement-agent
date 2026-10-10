@@ -8,4 +8,5 @@ node_modules/
 .vscode/
 
 assistant/logs/
+assistant/data/workspaces/
 frappe_app/public/dist/

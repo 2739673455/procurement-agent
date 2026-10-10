@@ -1,4 +1,4 @@
-"""将配置中的角色与模型引用登记到框架原生存储。"""
+"""将配置中的 Agent 定义与模型引用登记到框架原生存储。"""
 
 from uuid import NAMESPACE_URL, uuid5
 
@@ -8,38 +8,40 @@ from agentscope.app.storage import (
     ChatModelConfig,
     SessionConfig,
     SessionNaming,
+    StorageBase,
 )
 from agentscope.app.storage._model._agent import InviteConfig
+from starlette.datastructures import State
 
-from app.config import app_config
+from app.runtime.catalog import AgentCatalog
 from app.runtime.models import ChatCredential
 
 
 class AgentService:
-    """管理用户可用的预定义角色，保持模型密钥位于服务端配置。"""
+    """按用户登记预定义 Agent 和模型配置引用，模型密钥保留在服务端。"""
 
-    def __init__(self, runtime):
+    def __init__(self, runtime: State) -> None:
         """绑定框架运行资源与已校验的能力目录。"""
-        self.runtime = runtime
-        self.storage = runtime.storage
-        self.catalog = runtime.catalog
+        self.runtime: State = runtime
+        self.storage: StorageBase = runtime.storage
+        self.catalog: AgentCatalog = runtime.catalog
 
-    def identity(self, owner):
-        """按用户归属及默认入口角色取得稳定的框架标识。"""
+    def identity(self, owner: tuple[str, str]) -> tuple[str, str]:
+        """按用户归属及默认入口 Agent 取得稳定的框架标识。"""
         user_id = self.catalog.user_id(owner)
         return user_id, self.catalog.agent_id(user_id, self.catalog.definitions.default)
 
     @staticmethod
-    def reference_session_id(user_id, key):
-        """标识原生邀请机制读取成员模型和工作空间配置的参考会话。"""
+    def reference_session_id(user_id: str, key: str) -> str:
+        """标识原生 AgentInvite 工具读取成员 Agent 模型和工作空间配置的参考会话。"""
         return str(uuid5(NAMESPACE_URL, f"agent-reference:{user_id}:{key}"))
 
-    async def configure(self, user_id, key):
-        """保存角色及模型配置引用，返回框架会话模型配置。"""
-        from app.config.app_config import ROOT_DIR
+    async def configure(self, user_id: str, key: str) -> ChatModelConfig:
+        """保存 Agent 定义及模型配置引用，返回框架会话模型配置。"""
+        from app.config.loader import ROOT_DIR
 
         definition = self.catalog.definitions.agents[key]
-        model_key = definition.model or app_config.cfg.lm_config.active
+        model_key = definition.model
         credential = ChatCredential(
             id=str(uuid5(NAMESPACE_URL, f"model:{user_id}:{model_key}")),
             name=model_key,
@@ -76,9 +78,9 @@ class AgentService:
             parameters={},
         )
 
-    async def configure_user(self, user_id):
-        """登记全部角色及成员参考会话，让原生邀请机制继承成员自身的模型。"""
-        models = {}
+    async def configure_user(self, user_id: str) -> dict[str, ChatModelConfig]:
+        """登记全部 Agent 及参考会话，让原生 AgentInvite 工具使用成员 Agent 自身的模型。"""
+        models: dict[str, ChatModelConfig] = {}
         for key, definition in self.catalog.definitions.agents.items():
             model = models[key] = await self.configure(user_id, key)
             if not any(

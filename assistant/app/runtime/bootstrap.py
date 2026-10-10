@@ -1,61 +1,65 @@
-"""装配通用 AgentScope 服务，所有触发路径共享角色能力与任务资源管理。"""
+"""装配通用 AgentScope 服务，所有触发路径共享 Agent 角色能力与任务资源管理。"""
 
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from typing import Any
 
 from agentscope.agent import Agent, InjectionConfig
 from agentscope.app import create_app
 from agentscope.app.message_bus import InMemoryMessageBus
 from agentscope.app.middleware import ToolOffloadMiddleware
+from agentscope.app.storage import StorageBase
 from agentscope.app.workspace_manager import (
     DockerWorkspaceManager,
     IsolationPolicy,
     WorkspaceManagerBase,
 )
 from agentscope.middleware import MiddlewareBase
+from agentscope.tool import ToolBase
+from agentscope.workspace import WorkspaceBase
+from fastapi import FastAPI
 
-from app.config import app_config
-from app.config.app_config import ROOT_DIR
+from app.config.app import cfg
+from app.config.loader import ROOT_DIR
 from app.runtime.catalog import AgentCatalog
 from app.runtime.context import ContextRegistry
 from app.runtime.models import ChatCredential, ModelClients
+from app.runtime.offloading import ToolExecutionMiddleware
 from app.runtime.resources import AgentResources, RoleMiddleware, RunControlMiddleware
 from app.runtime.workspaces import session_directory_middlewares
 
 
 class RuntimeAgent(Agent):
-    """根据角色运行策略装配框架 Agent，不改变其推理和消息协议。"""
+    """设置 Agent 时区和工具取消行为。"""
 
-    def __init__(self, **kwargs):
-        """设置提示词时区，并按角色决定工具能否自动转为后台任务。"""
-        role = next(
-            mw for mw in kwargs["middlewares"] if isinstance(mw, RoleMiddleware)
-        )
-        if not role.definition.tool_offload:
-            kwargs["middlewares"] = [
-                mw
-                for mw in kwargs["middlewares"]
-                if not isinstance(mw, ToolOffloadMiddleware)
-            ]
+    def __init__(self, **kwargs: Any) -> None:
+        """设置提示词时区，为框架工具执行补齐取消收尾。"""
+        kwargs["middlewares"] = [
+            ToolExecutionMiddleware(mw) if isinstance(mw, ToolOffloadMiddleware) else mw
+            for mw in kwargs["middlewares"]
+        ]
         super().__init__(
-            injection_config=InjectionConfig(timezone=app_config.cfg.runtime.timezone),
+            injection_config=InjectionConfig(timezone=cfg.runtime.timezone),
             **kwargs,
         )
 
 
 def create_runtime(
-    storage,
+    storage: StorageBase,
     *,
     workspace_manager: WorkspaceManagerBase | None = None,
     catalog: AgentCatalog,
-):
+) -> FastAPI:
     """通过框架生命周期装配存储、工作空间、角色和运行资源。"""
-    contexts = ContextRegistry(storage, app_config.cfg.runtime.context_ttl_seconds)
+    contexts = ContextRegistry(storage, cfg.runtime.context_ttl_seconds)
     model_clients = ModelClients()
     resources = AgentResources(catalog)
-    role_tools: ContextVar[list | None] = ContextVar("role_tools", default=None)
+    role_tools: ContextVar[list[ToolBase] | None] = ContextVar(
+        "role_tools", default=None
+    )
     if workspace_manager is None:
-        settings = app_config.cfg.workspace
+        settings = cfg.workspace
         workspace_manager = DockerWorkspaceManager(
             str(ROOT_DIR / "data" / "workspaces"),
             isolation=IsolationPolicy.PER_USER,
@@ -66,8 +70,8 @@ def create_runtime(
             sweep_interval=settings.sweep_interval_seconds,
         )
 
-    async def tools(user_id, agent_id, session_id):
-        """按角色与认证任务上下文创建业务工具，团队成员使用同一解析路径。"""
+    async def tools(user_id: str, agent_id: str, session_id: str) -> list[ToolBase]:
+        """按角色和会话上下文创建业务工具，成员 Agent 使用负责人 Agent 绑定的客户端。"""
         _, definition = catalog.definition(user_id, agent_id)
         context = await contexts.resolve(user_id, session_id)
         cached = role_tools.get()
@@ -84,7 +88,7 @@ def create_runtime(
         return cached
 
     async def middlewares(
-        user_id, agent_id, session_id, workspace
+        user_id: str, agent_id: str, session_id: str, workspace: WorkspaceBase
     ) -> list[MiddlewareBase]:
         """为所有框架运行装配资源、角色能力和会话目录。"""
         model_clients.bind_task()
@@ -134,7 +138,7 @@ def create_runtime(
     native_lifespan = runtime.router.lifespan_context
 
     @asynccontextmanager
-    async def lifespan(app):
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         """等待框架运行任务退出后释放所有任务客户端及认证上下文。"""
         try:
             async with native_lifespan(app):

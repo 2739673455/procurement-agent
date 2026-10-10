@@ -1,16 +1,20 @@
 """AgentScope 模型装配；数据库保存配置引用，连接参数由服务端解析。"""
 
+from __future__ import annotations
+
 import asyncio
+import builtins
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
-from typing import Literal
+from typing import Any, Literal
 
-from agentscope.credential import CredentialBase, OpenAICredential
-from agentscope.formatter import DeepSeekChatFormatter
-from agentscope.model import OpenAIChatModel
+from agentscope.credential import CredentialBase
+from agentscope.formatter import FormatterBase
+from agentscope.model import ChatModelBase
+from pydantic import BaseModel
 
-from app.config import app_config
+from app.config.agents import ModelConfig, cfg
 from app.errors.agent import AgentError
 
 # 每个运行任务持有独立的退出栈，统一释放本次装配的模型客户端。
@@ -30,20 +34,13 @@ async def model_client_scope() -> AsyncGenerator[None]:
             _model_clients.reset(token)
 
 
-def register_model_client(client) -> None:
-    """将客户端登记到当前运行；独立创建时由调用方负责关闭。"""
-    stack = _model_clients.get()
-    if stack is not None:
-        stack.push_async_callback(client.close)
-
-
 class ModelClients:
     """覆盖框架独立唤醒任务，在任务结束或服务关闭时释放模型客户端。"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """保存任务退出栈及正在执行的异步释放操作。"""
-        self.stacks: dict[asyncio.Task, AsyncExitStack] = {}
-        self.closing: set[asyncio.Task] = set()
+        self.stacks: dict[asyncio.Task[Any], AsyncExitStack] = {}
+        self.closing: set[asyncio.Task[None]] = set()
 
     def bind_task(self) -> None:
         """为没有显式资源作用域的当前框架任务登记退出栈。"""
@@ -56,7 +53,7 @@ class ModelClients:
         _model_clients.set(stack)
         task.add_done_callback(self._finished)
 
-    def _finished(self, task: asyncio.Task) -> None:
+    def _finished(self, task: asyncio.Task[Any]) -> None:
         """在任务完成后启动异步清理，并跟踪至清理完成。"""
         stack = self.stacks.pop(task, None)
         if stack is not None:
@@ -73,50 +70,54 @@ class ModelClients:
 
 
 class ChatCredential(CredentialBase):
-    """引用服务端配置，供框架装配 Chat Completions 模型。"""
+    """引用服务端配置，供框架装配提供商原生模型。"""
 
     # 框架通过此类型标识识别和还原凭据。
     type: Literal["configured_chat"] = "configured_chat"
     config_key: str  # 服务端模型配置集合中的条目名称。
 
     @property
-    def settings(self):
+    def settings(self) -> ModelConfig:
         """按配置引用读取模型设置，引用不存在时抛出配置错误。"""
-        settings = app_config.cfg.lm_config.models.get(self.config_key)
+        settings = cfg.models.get(self.config_key)
         # 数据库中的配置引用必须对应服务端模型配置中的条目。
         if settings is None:
             raise AgentError("请检查配置文件中的模型配置。", 503)
         return settings
 
     @classmethod
-    def get_chat_model_class(cls):
+    def get_chat_model_class(cls) -> builtins.type[ConfiguredChatModel]:
         """向框架凭据工厂提供要装配的模型类。"""
-        return ChatCompletionsModel
+        return ConfiguredChatModel
 
 
-class ChatCompletionsModel(OpenAIChatModel):
-    """将服务端配置和服务商消息格式注入框架模型。"""
+class ConfiguredChatModel(ChatModelBase):
+    """框架的配置引用装配入口；构造结果是提供商原生模型实例。"""
 
-    def __init__(self, credential: ChatCredential, model: str, parameters=None):
-        """从凭据引用解析连接参数，并配置服务商消息格式与请求参数。"""
+    def __new__(
+        cls,
+        credential: ChatCredential,
+        model: str,
+        parameters: BaseModel | None = None,
+    ) -> ChatModelBase:
+        """从服务端配置创建模型，推理、格式化及请求参数处理由原生模型负责。"""
         settings = credential.settings
-        formatter = None
-        if settings.model_provider == "deepseek":
-            formatter = DeepSeekChatFormatter(
-                input_types=["text/plain", "image/*"]
-                if settings.image_inputs
-                else ["text/plain"]
-            )
-        super().__init__(
-            credential=OpenAICredential(
-                api_key=settings.api_key,
-                base_url=settings.base_url,
-            ),
-            model=settings.model,
-            context_size=settings.context_size or 32768,
-            max_retries=0,
-            client_kwargs={"timeout": settings.timeout_seconds, "max_retries": 0},
-            extra_body=settings.params,
-            formatter=formatter,
+        model_cls = settings.credential.get_chat_model_class()
+        kwargs: dict[str, Any] = {
+            "credential": settings.credential,
+            "model": settings.model,
+            "parameters": model_cls.Parameters(**settings.params),
+            "context_size": settings.context_size or 32768,
+            "max_retries": 0,
+            "client_kwargs": settings.client_kwargs,
+        }
+        native_model: Any = model_cls(**kwargs)
+        formatter: FormatterBase = native_model.formatter
+        formatter.input_types = (
+            ["text/plain", "image/*"] if settings.image_inputs else ["text/plain"]
         )
-        register_model_client(self.client)
+        stack = _model_clients.get()
+        client = getattr(native_model, "client", None)
+        if stack is not None and client is not None:
+            stack.push_async_callback(client.close)
+        return native_model

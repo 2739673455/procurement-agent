@@ -2,7 +2,9 @@
 
 import json
 import os
-from http.client import HTTPException
+from collections.abc import Iterator
+from http.client import HTTPException, HTTPResponse
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -12,7 +14,7 @@ from buying_ai.context import page_snapshot
 from werkzeug.wrappers import Response
 
 
-def _stream_response(upstream):
+def _stream_response(upstream: HTTPResponse) -> Iterator[bytes]:
     """逐行转发上游 SSE 数据和心跳，不等待整个 Agent 任务完成。"""
     with upstream:
         # 首帧使 WSGI 代理立即发送响应头，浏览器无需等待框架的空闲心跳。
@@ -23,18 +25,18 @@ def _stream_response(upstream):
 # 将函数开放为 Frappe POST 接口，默认不允许访客调用。
 @frappe.whitelist(methods=["POST"])
 def sessions(
-    action,
-    session_id=None,
-    message="",
-    title="",
-    page_context=None,
-    attachments=None,
-    confirmation=None,
-    upload=None,
-):
+    action: str,
+    session_id: str | None = None,
+    message: str = "",
+    title: str = "",
+    page_context: str | dict[str, Any] | None = None,
+    attachments: str | list[str] | None = None,
+    confirmation: str | dict[str, Any] | None = None,
+    upload: str | dict[str, Any] | None = None,
+) -> dict[str, Any] | Response:
     """代理会话操作：订阅返回 SSE 长连接，其余操作返回 JSON。"""
     # 转发当前登录会话，供 Assistant 验证身份。
-    payload = {
+    payload: dict[str, Any] = {
         "action": action,
         "session_id": session_id,
         "message": message,
