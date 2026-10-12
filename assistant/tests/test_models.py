@@ -5,6 +5,7 @@ from typing import Any, cast
 
 import httpx
 import pytest
+from agentscope.credential import DeepSeekCredential
 from agentscope.message import (
     AssistantMsg,
     Msg,
@@ -18,18 +19,18 @@ from agentscope.model import ChatModelBase, ChatResponse, DeepSeekChatModel
 from openai import AsyncOpenAI
 from pydantic import ValidationError
 
-from app.config.agents import AgentDefinitions, ModelConfig, cfg
-from app.runtime.models import ChatCredential
+from app.config.agents import cfg
+from app.runtime.config import AgentDefinitions, ModelConfig
 
 type ModelFactory = Callable[[dict[str, Any] | None], DeepSeekChatModel]
 
 
 @pytest.fixture
-def make_model(monkeypatch: pytest.MonkeyPatch) -> ModelFactory:
-    monkeypatch.setattr(cfg, "models", dict(cfg.models))
+def make_model() -> ModelFactory:
+    """直接检查原生提供商模型的消息协议。"""
 
     def build(params: dict[str, Any] | None = None) -> DeepSeekChatModel:
-        cfg.models["protocol-test"] = ModelConfig.model_validate(
+        settings = ModelConfig.model_validate(
             {
                 "credential": {
                     "type": "deepseek_credential",
@@ -43,12 +44,17 @@ def make_model(monkeypatch: pytest.MonkeyPatch) -> ModelFactory:
                 "context_size": 32768,
             }
         )
-        credential = ChatCredential(
-            id="test-credential", name="test", config_key="protocol-test"
+        model_cls = cast(
+            type[DeepSeekChatModel], settings.credential.get_chat_model_class()
         )
         return cast(
             DeepSeekChatModel,
-            credential.get_chat_model_class()(credential=credential, model="test"),
+            model_cls(
+                credential=cast(DeepSeekCredential, settings.credential),
+                model=settings.model,
+                parameters=model_cls.Parameters(**settings.params),
+                client_kwargs=settings.client_kwargs,
+            ),
         )
 
     return build

@@ -15,7 +15,7 @@ class ToolExecutionMiddleware(MiddlewareBase):
 
     def __init__(self, offload: ToolOffloadMiddleware) -> None:
         """使用框架创建的后台执行中间件。"""
-        self.offload = offload
+        self._offload = offload
 
     async def on_acting(
         self,
@@ -36,7 +36,7 @@ class ToolExecutionMiddleware(MiddlewareBase):
                 yield item
 
         try:
-            async for item in self.offload.on_acting(agent, input_kwargs, execute):
+            async for item in self._offload.on_acting(agent, input_kwargs, execute):
                 yield item
         except asyncio.CancelledError:
             if execution is None or execution is asyncio.current_task():

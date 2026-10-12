@@ -12,15 +12,17 @@ class ERPNext:
 
     def __init__(self, sid: str, client: httpx.AsyncClient) -> None:
         """绑定用户凭据；连接池的创建和释放由应用生命周期负责。"""
-        self.client = client
-        self.headers = {"Cookie": "sid=" + sid}
+        self._client = client
+        self._headers = {"Cookie": "sid=" + sid}
 
     async def get(
         self, path: str, params: dict[str, str | int] | None = None
     ) -> dict[str, Any]:
         """携带用户身份发起 GET 请求，将上游异常转换为可展示的业务错误。"""
         try:
-            response = await self.client.get(path, params=params, headers=self.headers)
+            response = await self._client.get(
+                path, params=params, headers=self._headers
+            )
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as exc:

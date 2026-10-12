@@ -11,7 +11,7 @@ from agentscope.middleware import MiddlewareBase
 from agentscope.tool import BackendBase, Bash, Edit, ExecResult, Glob, Grep, Read, Write
 from agentscope.workspace import WorkspaceBase
 
-from app.errors.agent import AgentError
+from .errors import RunError
 
 
 class SessionDirectoryBackend(BackendBase):
@@ -19,12 +19,12 @@ class SessionDirectoryBackend(BackendBase):
 
     def __init__(self, backend: BackendBase, directory: str) -> None:
         """绑定执行后端和目录；不改变用户共享后端的工作目录。"""
-        self.backend = backend
-        self.directory = directory
+        self._backend = backend
+        self._directory = directory
 
     async def getcwd(self) -> str:
         """返回会话目录，供 Bash、Glob、Grep 确定默认执行或搜索位置。"""
-        return self.directory
+        return self._directory
 
     async def exec_shell(
         self,
@@ -34,19 +34,19 @@ class SessionDirectoryBackend(BackendBase):
         timeout: float | None = None,
     ) -> ExecResult:
         """在指定目录或当前会话目录执行命令。"""
-        return await self.backend.exec_shell(
+        return await self._backend.exec_shell(
             command,
-            cwd=self.abspath(cwd or self.directory, cwd=self.directory),
+            cwd=self.abspath(cwd or self._directory, cwd=self._directory),
             timeout=timeout,
         )
 
     async def read_file(self, path: str) -> bytes:
         """读取原生文件工具传入的绝对路径。"""
-        return await self.backend.read_file(path)
+        return await self._backend.read_file(path)
 
     async def write_file(self, path: str, data: bytes) -> None:
         """写入原生文件工具传入的绝对路径。"""
-        await self.backend.write_file(path, data)
+        await self._backend.write_file(path, data)
 
 
 class SessionDirectoryMiddleware(MiddlewareBase):
@@ -54,8 +54,8 @@ class SessionDirectoryMiddleware(MiddlewareBase):
 
     def __init__(self, backend: SessionDirectoryBackend, workspace_root: str) -> None:
         """保存本轮目录后端和用户工作空间根路径。"""
-        self.backend = backend
-        self.workspace_root = workspace_root
+        self._backend = backend
+        self._workspace_root = workspace_root
 
     async def on_reply(
         self,
@@ -69,9 +69,9 @@ class SessionDirectoryMiddleware(MiddlewareBase):
                 if isinstance(tool, (Bash, Edit, Glob, Grep, Read, Write)):
                     # 框架工具用实例字段保存后端；仅调整本轮副本，不修改共享对象。
                     scoped = copy(tool)
-                    scoped._backend = self.backend
+                    scoped._backend = self._backend
                     if isinstance(scoped, Bash):
-                        scoped._cwd = self.backend.directory
+                        scoped._cwd = await self._backend.getcwd()
                     group.tools[index] = scoped
         async for event in next_handler(**input_kwargs):
             yield event
@@ -80,12 +80,12 @@ class SessionDirectoryMiddleware(MiddlewareBase):
         """向模型提供默认工作目录及同一用户工作空间内的访问范围。"""
         return (
             current_prompt
-            + f"\n当前会话的默认工作目录是 {self.backend.directory}。"
+            + f"\n当前会话的默认工作目录是 {await self._backend.getcwd()}。"
             + "Bash 中的相对路径以当前会话目录为起点。"
             + "Read、Write、Edit 的 file_path 必须使用绝对路径；"
             + "访问当前会话的文件时，请以当前会话目录拼接完整路径。"
             + "Glob、Grep 默认搜索当前会话目录。"
-            + f"用户工作空间根目录是 {self.workspace_root}，"
+            + f"用户工作空间根目录是 {self._workspace_root}，"
             + "可以访问同一用户工作空间内其他会话的目录。"
         )
 
@@ -103,7 +103,7 @@ async def session_directory_middlewares(
     directory = session_directory(workspace, session_id)
     result = await backend.exec_shell(["mkdir", "-p", "--", directory])
     if result.exit_code != 0:
-        raise AgentError("无法创建会话工作目录。", 503)
+        raise RunError("无法创建会话工作目录。", "unavailable")
     return [
         SessionDirectoryMiddleware(
             SessionDirectoryBackend(backend, directory), workspace.workdir

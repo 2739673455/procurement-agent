@@ -9,12 +9,14 @@ from typing import Any, Never, cast
 from unittest.mock import AsyncMock
 
 import pytest
-from agentscope.app.message_bus import MessageBusKeys
+from agentscope.agent import Agent, InjectionConfig
+from agentscope.app.message_bus import InMemoryMessageBus, MessageBusKeys
 from agentscope.app.storage import AsyncSQLAlchemyStorage
 from agentscope.app.workspace_manager import IsolationPolicy, LocalWorkspaceManager
 from agentscope.credential import OpenAICredential
 from agentscope.event import AgentEvent
 from agentscope.formatter import OpenAIChatFormatter
+from agentscope.mcp import MCPClient
 from agentscope.message import Msg, ToolResultBlock
 from agentscope.model import ChatModelBase, ChatResponse
 from agentscope.tool import ToolChoice
@@ -22,11 +24,15 @@ from pydantic import SecretStr, TypeAdapter
 
 from app.clients.erpnext.client import ERPNext
 from app.clients.erpnext.items import Filters
+from app.config import agents, mcp
+from app.config.loader import ROOT_DIR
 from app.contracts.sessions import Command
 from app.errors.agent import AgentError
-from app.runtime.bootstrap import RuntimeAgent, create_runtime
+from app.runtime.bootstrap import create_runtime
 from app.runtime.catalog import AgentCatalog
-from app.runtime.models import _model_clients, model_client_scope
+from app.runtime.config import AgentDefinitions
+from app.runtime.errors import RunError
+from app.runtime.models import _model_clients
 from app.services.sessions import SessionService
 
 
@@ -81,11 +87,27 @@ def response(text: str | None = None, tool: bool = False) -> ChatResponse:
     return value
 
 
+def configured_catalog(
+    definitions: AgentDefinitions | None = None,
+    mcps: dict[str, MCPClient] | None = None,
+) -> AgentCatalog:
+    """为业务集成测试显式装配项目配置。"""
+    return AgentCatalog(
+        definitions=definitions if definitions is not None else agents.cfg,
+        mcps=mcps if mcps is not None else mcp.cfg.servers,
+        base_dir=ROOT_DIR,
+        skills_dir=ROOT_DIR / "resources" / "skills",
+    )
+
+
 @asynccontextmanager
 async def service_at(path: Path) -> AsyncGenerator[SessionService]:
     app = create_runtime(
         AsyncSQLAlchemyStorage(f"sqlite+aiosqlite:///{path / 'state.db'}"),
-        catalog=AgentCatalog(),
+        catalog=configured_catalog(),
+        message_bus=InMemoryMessageBus(),
+        injection_config=InjectionConfig(timezone="Asia/Shanghai"),
+        context_ttl_seconds=3600,
         workspace_manager=LocalWorkspaceManager(
             str(path / "workspaces"), isolation=IsolationPolicy.PER_USER
         ),
@@ -124,7 +146,7 @@ async def watch(
     assert response.media_type == "text/event-stream"
     assert response.headers["X-Accel-Buffering"] == "no"
     ready = asyncio.Event()
-    bus = service.runtime.message_bus
+    bus = service._runtime.message_bus
     subscribe = bus.subscribe
 
     def mark_ready(key: str, **kwargs: Any) -> AsyncGenerator[dict[str, Any]]:
@@ -168,7 +190,7 @@ async def run_turn(
     async with watch(service, identifier, owner=owner) as events:
         result = await command(service, "send", identifier, owner=owner, **kwargs)
         assert result.model_dump() == {"status": "started", "session_id": identifier}
-        task = service.runtime.chat_run_registry.get(identifier)
+        task = service._runtime.chat_run_registry.get(identifier)
         assert task is not None
         await asyncio.wait_for(task, 10)
     return events
@@ -225,8 +247,8 @@ def test_tool_history_restored_and_credentials_bound(
             assert any(
                 isinstance(block, ToolResultBlock) for block in history[-1].content
             )
-            user_id, _ = service.agents.identity(("site", "owner"))
-            credentials = await service.storage.list_credentials(user_id)
+            user_id, _ = service._identity(("site", "owner"))
+            credentials = await service._storage.list_credentials(user_id)
             assert "api_key" not in str([record.data for record in credentials])
             assert "bash" in str(first.tools).lower()
             assert "query_items" in str(first.tools)
@@ -259,14 +281,14 @@ def test_cancel_then_new_turn_and_double_send(
             async with watch(service, identifier) as events:
                 await command(service, "send", identifier, message="问题")
                 await asyncio.wait_for(entered.wait(), 5)
-                with pytest.raises(AgentError) as conflict:
+                with pytest.raises(RunError) as conflict:
                     await command(service, "send", identifier, message="重复")
-                assert conflict.value.status == 409
+                assert conflict.value.code == "conflict"
                 await command(service, "cancel", identifier)
                 assert not (await command(service, "messages", identifier))["running"]
                 model.client.close.assert_awaited_once()
                 await command(service, "send", identifier, message="新问题")
-                task = service.runtime.chat_run_registry.get(identifier)
+                task = service._runtime.chat_run_registry.get(identifier)
                 assert task is not None
                 await asyncio.wait_for(task, 10)
             ends = [e for e in events if e["type"] == "REPLY_END"]
@@ -303,7 +325,7 @@ def test_owner_isolation_delete_and_disconnect(
             async with watch(service, identifier):
                 await command(service, "send", identifier, message="问题")
                 await asyncio.wait_for(entered.wait(), 5)
-            task = service.runtime.chat_run_registry.get(identifier)
+            task = service._runtime.chat_run_registry.get(identifier)
             assert task is not None and not task.done()
             async with watch(service, identifier) as events:
                 await command(service, "delete", identifier)
@@ -312,11 +334,12 @@ def test_owner_isolation_delete_and_disconnect(
                 for e in events
             ), events
             assert (await command(service, "list"))["sessions"] == []
-            user_id, agent_id = service.agents.identity(("site", "owner"))
+            user_id, agent_id = service._identity(("site", "owner"))
             assert (
-                await service.storage.get_session(user_id, agent_id, identifier) is None
+                await service._storage.get_session(user_id, agent_id, identifier)
+                is None
             )
-            assert await service.storage.list_messages(user_id, identifier) == (
+            assert await service._storage.list_messages(user_id, identifier) == (
                 [],
                 False,
             )
@@ -355,14 +378,14 @@ def test_native_model_factory_resolves_server_reference(
 
         async with service_at(tmp_path) as service:
             identifier = (await command(service, "create"))["id"]
-            user_id, agent_id = service.agents.identity(("site", "owner"))
-            record = await service.storage.get_session(user_id, agent_id, identifier)
+            user_id, agent_id = service._identity(("site", "owner"))
+            record = await service._storage.get_session(user_id, agent_id, identifier)
             assert record is not None and record.config.chat_model_config is not None
-            async with model_client_scope():
+            async with service._runtime.model_clients.scope():
                 model = await get_model(
                     user_id,
                     record.config.chat_model_config,
-                    service.runtime.resource_access_service,
+                    service._runtime.resource_access_service,
                 )
                 assert type(model) is credential.get_chat_model_class()
                 assert isinstance(
@@ -378,7 +401,7 @@ def test_native_model_factory_resolves_server_reference(
                 assert model.max_retries == model.client.max_retries == 0
                 assert str(model.client.base_url).rstrip("/") == "https://model.invalid"
                 assert not model.client.is_closed()
-                credentials = await service.storage.list_credentials(user_id)
+                credentials = await service._storage.list_credentials(user_id)
                 stored = str([record.data for record in credentials])
                 assert "server-only-secret" not in stored and "api_key" not in stored
             assert model.client.is_closed()
@@ -414,7 +437,7 @@ def test_concurrent_users_get_separate_erp_clients(
                 watch(service, b, owner=("site", "other")) as second,
             ):
                 await command(service, "send", a, message="query", erp="client-A")
-                first_task = service.runtime.chat_run_registry.get(a)
+                first_task = service._runtime.chat_run_registry.get(a)
                 await command(
                     service,
                     "send",
@@ -423,7 +446,7 @@ def test_concurrent_users_get_separate_erp_clients(
                     owner=("site", "other"),
                     erp="client-B",
                 )
-                tasks = [first_task, service.runtime.chat_run_registry.get(b)]
+                tasks = [first_task, service._runtime.chat_run_registry.get(b)]
                 assert all(task is not None for task in tasks)
                 await asyncio.wait_for(asyncio.gather(*tasks), 10)
             results = [first, second]
@@ -490,8 +513,8 @@ def test_stop_during_tools_preserves_result_pairs(
                 e["type"] == "REPLY_END" and e["finished_reason"] == "interrupted"
                 for e in events
             ), events
-            user_id, agent_id = service.agents.identity(("site", "owner"))
-            record = await service.storage.get_session(user_id, agent_id, identifier)
+            user_id, agent_id = service._identity(("site", "owner"))
+            record = await service._storage.get_session(user_id, agent_id, identifier)
             assert record is not None
             blocks = [block for msg in record.state.context for block in msg.content]
             assert (
@@ -578,7 +601,7 @@ def test_background_tool_state_delivery_and_stop(
             ] == ["query_items"]
             assert first.tools is not None
             assert "ToolStop" in {tool["function"]["name"] for tool in first.tools}
-            with pytest.raises(AgentError, match="正在执行"):
+            with pytest.raises(RunError, match="正在执行"):
                 await command(service, "send", identifier, message="不能抢跑")
 
             if action == "complete":
@@ -616,7 +639,7 @@ def test_background_tool_state_delivery_and_stop(
                 )
             else:
                 if action == "tool_stop":
-                    tools = await service.runtime.background_task_manager.list_tools(
+                    tools = await service._runtime.background_task_manager.list_tools(
                         identifier
                     )
                     await cast(ToolStop, tools[0])(
@@ -642,7 +665,7 @@ def test_background_tool_state_delivery_and_stop(
                 if action == "interrupt":
                     assert history["resumable"]
                     await command(service, "resume", identifier)
-                    task = service.runtime.chat_run_registry.get(identifier)
+                    task = service._runtime.chat_run_registry.get(identifier)
                     assert task is not None
                     await asyncio.wait_for(task, 5)
                 else:
@@ -663,7 +686,7 @@ def test_late_subscription_reports_persisted_failure(
         async with service_at(tmp_path) as service:
             identifier = (await command(service, "create"))["id"]
             await command(service, "send", identifier, message="失败")
-            task = service.runtime.chat_run_registry.get(identifier)
+            task = service._runtime.chat_run_registry.get(identifier)
             assert task is not None
             await task
             async with watch(service, identifier) as events:
@@ -692,7 +715,7 @@ def test_queued_reply_keeps_model_client_open(
             async def enqueue_hint(*args: Any, **kwargs: Any) -> ChatResponse:
                 """在首条回复生成过程中投递消息，触发框架继续当前运行。"""
                 if not model.inputs:
-                    await service.runtime.message_bus.queue_push(
+                    await service._runtime.message_bus.queue_push(
                         MessageBusKeys.inbox(identifier),
                         HintBlock(source="test", hint="请补充说明").model_dump(
                             mode="json"
@@ -724,18 +747,20 @@ def test_agent_setup_failure_closes_all_model_clients(
         fallback = Model([])
         use_models(monkeypatch, [primary, fallback])
 
-        def fail_setup(self: RuntimeAgent, **kwargs: Any) -> Never:
+        def fail_setup(self: Agent, **kwargs: Any) -> Never:
             """在模型创建后中断 Agent 装配。"""
             raise ValueError("Agent setup failed")
 
-        monkeypatch.setattr(RuntimeAgent, "__init__", fail_setup)
         async with service_at(tmp_path) as service:
+            monkeypatch.setattr(
+                service._runtime.custom_agent_cls, "__init__", fail_setup
+            )
             identifier = (await command(service, "create"))["id"]
-            user_id, agent_id = service.agents.identity(("site", "owner"))
-            record = await service.storage.get_session(user_id, agent_id, identifier)
+            user_id, agent_id = service._identity(("site", "owner"))
+            record = await service._storage.get_session(user_id, agent_id, identifier)
             assert record is not None
             record.config.fallback_chat_model_config = record.config.chat_model_config
-            await service.storage.upsert_session(
+            await service._storage.upsert_session(
                 user_id, agent_id, record.config, session_id=identifier
             )
             await run_turn(service, identifier, message="问题")
@@ -774,13 +799,13 @@ def test_upload_workspace_ownership_and_cleanup(tmp_path: Path) -> None:
                 "报价.csv",
             )
             user_id, row = await service._get_session(("site", "owner"), first)
-            loaded = await service.attachments.load(
+            loaded = await service._attachments.load(
                 user_id, row, ["报价.csv", "报价.csv"]
             )
             assert loaded == [uploaded]
             _, other = await service._get_session(("site", "owner"), second)
             with pytest.raises(AgentError):
-                await service.attachments.load(user_id, other, ["报价.csv"])
+                await service._attachments.load(user_id, other, ["报价.csv"])
             independent = await command(service, "upload", second, upload=data)
             assert independent["path"] != uploaded["path"]
             assert Path(independent["path"]).read_text() == "型号,数量\nA,3"
@@ -794,7 +819,7 @@ def test_upload_workspace_ownership_and_cleanup(tmp_path: Path) -> None:
                         service, "upload", first, upload={**data, "name": name}
                     )
                 with pytest.raises(AgentError):
-                    await service.attachments.load(user_id, row, [name])
+                    await service._attachments.load(user_id, row, [name])
             with pytest.raises(AgentError):
                 await command(
                     service, "upload", first, upload={**data, "data": "!invalid"}

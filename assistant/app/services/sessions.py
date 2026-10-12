@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Mapping
 from datetime import datetime
 from typing import TypedDict
@@ -10,18 +11,20 @@ from uuid import UUID, uuid4
 
 from agentscope.app._router._schema import ChatTriggerResponse
 from agentscope.app._router._session import stream_session_events
+from agentscope.app._service import SessionService as NativeSessionService
+from agentscope.app.message_bus import MessageBus
 from agentscope.app.storage import (
     SessionConfig,
     SessionNaming,
     SessionRecord,
     StorageBase,
 )
+from agentscope.app.workspace_manager import WorkspaceManagerBase
 from agentscope.message import Msg
 from starlette.datastructures import State
 from starlette.responses import StreamingResponse
 
 from app.clients.erpnext.client import ERPNext
-from app.config.agents import cfg
 from app.contracts.sessions import (
     AttachmentInfo,
     AttachmentUpload,
@@ -29,12 +32,13 @@ from app.contracts.sessions import (
     PageContext,
 )
 from app.errors.agent import AgentError
-from app.runtime.context import CONTROL_KEY
-from app.services.agents import AgentService
+from app.runtime.agents import AgentRegistry
+from app.runtime.catalog import AgentCatalog
+from app.runtime.context import CONTROL_KEY, ContextRegistry
+from app.runtime.runs import RunController
+from app.runtime.teams import TeamService
 from app.services.attachments import AttachmentService
 from app.services.inputs import user_message
-from app.services.runs import RunService
-from app.services.teams import TeamService
 
 
 class SessionListItem(TypedDict):
@@ -50,13 +54,24 @@ class SessionService:
 
     def __init__(self, runtime: State) -> None:
         """装配角色、Agent 团队及运行服务，并创建入口操作锁。"""
-        self.runtime = runtime
-        self.storage: StorageBase = runtime.storage
-        self.agents = AgentService(runtime)
-        self.attachments = AttachmentService(runtime.workspace_manager)
-        self.teams = TeamService(runtime)
-        self.runs = RunService(runtime, self.teams)
+        self._runtime = runtime
+        self._storage: StorageBase = runtime.storage
+        self._agents: AgentRegistry = runtime.agents
+        self._catalog: AgentCatalog = runtime.catalog
+        self._contexts: ContextRegistry = runtime.contexts
+        self._workspace_manager: WorkspaceManagerBase = runtime.workspace_manager
+        self._session_service: NativeSessionService = runtime.session_service
+        self._attachments = AttachmentService(self._workspace_manager)
+        self._teams: TeamService = runtime.teams
+        self._runs: RunController = runtime.runs
         self._lock = asyncio.Lock()
+
+    def _identity(self, owner: tuple[str, str]) -> tuple[str, str]:
+        """将已认证的站点和用户名映射为运行用户及默认 Agent。"""
+        user_id = json.dumps(owner, ensure_ascii=False, separators=(",", ":"))
+        return user_id, self._catalog.agent_id(
+            user_id, self._catalog.definitions.default
+        )
 
     async def execute(
         self, command: Command, owner: tuple[str, str], erp: ERPNext
@@ -92,7 +107,7 @@ class SessionService:
                     clients = {"erpnext": erp}
                     match command.action:
                         case "interrupt" | "cancel":
-                            return await self.runs.stop(
+                            return await self._runs.stop(
                                 user_id,
                                 row,
                                 clients,
@@ -101,11 +116,11 @@ class SessionService:
                                 else "cancelled",
                             )
                         case "resume":
-                            return await self.runs.resume(user_id, row, clients)
+                            return await self._runs.resume(user_id, row, clients)
                         case "confirm":
                             if command.confirmation is None:
                                 raise AgentError("缺少工具确认事件。")
-                            return await self.runs.confirm(
+                            return await self._runs.confirm(
                                 user_id, row, command.confirmation, clients
                             )
 
@@ -115,30 +130,30 @@ class SessionService:
         """核实用户会话归属，成员 Agent 会话通过 Agent 团队范围操作。"""
         if session_id is None:
             raise AgentError("缺少会话 ID。")
-        user_id = self.agents.catalog.user_id(owner)
-        row = await self.storage.get_session(user_id, "", str(session_id))
+        user_id, _ = self._identity(owner)
+        row = await self._storage.get_session(user_id, "", str(session_id))
         references = {
-            self.agents.reference_session_id(user_id, key)
-            for key in self.agents.catalog.definitions.agents
+            self._agents.reference_session_id(user_id, key)
+            for key in self._catalog.definitions.agents
         }
         if row is None or row.origin.type != "user" or row.id in references:
             raise AgentError("会话不存在或无权访问。", 404)
-        self.agents.catalog.definition(user_id, row.agent_id)
+        self._catalog.definition(user_id, row.agent_id)
         return user_id, row
 
     async def list(self, owner: tuple[str, str]) -> dict[str, list[SessionListItem]]:
         """列出用户会话，排除框架 Agent 团队会话及角色参考会话。"""
         async with self._lock:
-            user_id = self.agents.catalog.user_id(owner)
+            user_id, _ = self._identity(owner)
             sessions: list[SessionListItem] = []
-            for key in self.agents.catalog.definitions.agents:
-                rows = await self.storage.list_sessions(
-                    user_id, self.agents.catalog.agent_id(user_id, key)
+            for key in self._catalog.definitions.agents:
+                rows = await self._storage.list_sessions(
+                    user_id, self._catalog.agent_id(user_id, key)
                 )
                 for row in rows:
                     if (
                         row.origin.type == "user"
-                        and row.id != self.agents.reference_session_id(user_id, key)
+                        and row.id != self._agents.reference_session_id(user_id, key)
                     ):
                         sessions.append(
                             {
@@ -156,14 +171,14 @@ class SessionService:
     async def create(self, owner: tuple[str, str]) -> dict[str, str]:
         """创建默认入口 Agent 的会话，并为原生 AgentInvite 工具登记成员 Agent 模型配置。"""
         async with self._lock:
-            key = self.agents.catalog.definitions.default
-            user_id, agent_id = self.agents.identity(owner)
-            models = await self.agents.configure_user(user_id)
+            key = self._catalog.definitions.default
+            user_id, agent_id = self._identity(owner)
+            models = await self._agents.configure_user(user_id)
             identifier = str(uuid4())
-            workspace_id = await self.runtime.workspace_manager.assign_workspace_id(
+            workspace_id = await self._workspace_manager.assign_workspace_id(
                 user_id=user_id, agent_id=agent_id, session_id=identifier
             )
-            row = await self.storage.upsert_session(
+            row = await self._storage.upsert_session(
                 user_id,
                 agent_id,
                 SessionConfig(
@@ -185,23 +200,23 @@ class SessionService:
             history: list[Msg] = []
             before: str | None = None
             while True:
-                page, more = await self.storage.list_messages(
+                page, more = await self._storage.list_messages(
                     user_id, row.id, limit=100, before=before
                 )
                 history = page + history
                 if not more:
                     break
                 before = page[0].id
-            summary = await self.teams.summary(user_id, row)
+            summary = await self._teams.summary(user_id, row)
             return {
                 "messages": history,
                 "intent": row.state.middle_context.get(CONTROL_KEY) or "active",
                 **summary,
-                "status": await self.runtime.session_service.get_session_status(
+                "status": await self._session_service.get_session_status(
                     user_id, row.agent_id, row.id
                 ),
                 "resumable": not summary["running"]
-                and await self.runs.resumable(user_id, row),
+                and await self._runs.resumable(user_id, row),
             }
 
     async def rename(
@@ -212,10 +227,10 @@ class SessionService:
             user_id, row = await self._get_session(owner, session_id)
             if not title.strip():
                 raise AgentError("标题不能为空。")
-            await self.runs.require_idle(user_id, row)
+            await self._runs.require_idle(user_id, row)
             row.config.name = title.strip()
             row.config.naming = SessionNaming(auto=False)
-            await self.storage.upsert_session(
+            await self._storage.upsert_session(
                 user_id, row.agent_id, row.config, session_id=row.id
             )
             return {"ok": True}
@@ -226,11 +241,9 @@ class SessionService:
         """停止整个任务后由框架删除会话、Agent 团队、消息及工作空间会话资源。"""
         async with self._lock:
             user_id, row = await self._get_session(owner, session_id)
-            await self.runs.stop(user_id, row, {"erpnext": erp}, intent="cancelled")
-            await self.runtime.session_service.delete_session(
-                user_id, row.agent_id, row.id
-            )
-            self.runtime.contexts.forget(row.id)
+            await self._runs.stop(user_id, row, {"erpnext": erp}, intent="cancelled")
+            await self._session_service.delete_session(user_id, row.agent_id, row.id)
+            self._contexts.forget(row.id)
             return {"ok": True}
 
     async def upload(
@@ -244,7 +257,7 @@ class SessionService:
             user_id, row = await self._get_session(owner, session_id)
             if upload is None:
                 raise AgentError("缺少上传文件。")
-            return await self.attachments.save(user_id, row, upload)
+            return await self._attachments.save(user_id, row, upload)
 
     async def send(
         self,
@@ -261,19 +274,19 @@ class SessionService:
             user_id, row = await self._get_session(owner, session_id)
             if not message.strip():
                 raise AgentError("消息不能为空。")
-            await self.runs.require_idle(user_id, row)
-            key, definition = self.agents.catalog.definition(user_id, row.agent_id)
-            models = await self.agents.configure_user(user_id)
+            await self._runs.require_idle(user_id, row)
+            key, definition = self._catalog.definition(user_id, row.agent_id)
+            models = await self._agents.configure_user(user_id)
             row.config.chat_model_config = models[key]
-            await self.storage.upsert_session(
+            await self._storage.upsert_session(
                 user_id, row.agent_id, row.config, session_id=row.id
             )
-            files = await self.attachments.load(user_id, row, attachments)
-            model = cfg.models[definition.model]
+            files = await self._attachments.load(user_id, row, attachments)
+            model = self._catalog.definitions.models[definition.model]
             incoming = user_message(
                 message.strip(), page_context, files, image_inputs=model.image_inputs
             )
-            return await self.runs.start(user_id, row, incoming, {"erpnext": erp})
+            return await self._runs.start(user_id, row, incoming, {"erpnext": erp})
 
     async def subscribe(
         self, owner: tuple[str, str], session_id: UUID | str | None
@@ -281,10 +294,11 @@ class SessionService:
         """核实归属并返回框架原生事件长连接。"""
         async with self._lock:
             user_id, row = await self._get_session(owner, session_id)
+            message_bus: MessageBus = self._runtime.message_bus
             return await stream_session_events(
                 session_id=row.id,
                 agent_id=row.agent_id,
                 user_id=user_id,
-                storage=self.storage,
-                message_bus=self.runtime.message_bus,
+                storage=self._storage,
+                message_bus=message_bus,
             )

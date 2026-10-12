@@ -11,8 +11,10 @@ from loguru import logger
 from starlette.exceptions import HTTPException
 from starlette.types import ExceptionHandler
 
+from app.errors.agent import AgentError
 from app.errors.base import ProblemError
 from app.observability import context
+from app.runtime.errors import RunError
 
 
 def _build_response(
@@ -60,6 +62,19 @@ def _problem_error_handler(request: Request, exc: ProblemError) -> JSONResponse:
         else None
     )
     return _build_response(request, exc, headers=headers)
+
+
+def _run_error_handler(request: Request, exc: RunError) -> JSONResponse:
+    """将独立运行模块的错误转换为应用响应。"""
+    status = {
+        "not_found": HTTPStatus.NOT_FOUND,
+        "context_expired": HTTPStatus.UNAUTHORIZED,
+        "conflict": HTTPStatus.CONFLICT,
+        "unavailable": HTTPStatus.SERVICE_UNAVAILABLE,
+    }[exc.code]
+    problem = AgentError(str(exc), status)
+    _log_problem(problem, exc)
+    return _build_response(request, problem)
 
 
 def _validation_error_handler(
@@ -114,6 +129,7 @@ def unhandled_exception_handler(request: Request, exc: Exception) -> JSONRespons
 
 def register_exception_handlers(app: FastAPI) -> None:
     """注册全局异常处理器。"""
+    app.add_exception_handler(RunError, cast(ExceptionHandler, _run_error_handler))
     app.add_exception_handler(
         ProblemError,
         cast(ExceptionHandler, _problem_error_handler),

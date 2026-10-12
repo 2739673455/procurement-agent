@@ -13,7 +13,7 @@ class MCPDefinitions(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def assign_client_names(cls, data: object) -> object:
+    def _assign_client_names(cls, data: object) -> object:
         """使用服务名作为客户端名称。"""
         if not isinstance(data, dict) or not isinstance(data.get("servers"), dict):
             return data

@@ -2,116 +2,82 @@
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from contextvars import ContextVar
 from typing import Any
 
 from agentscope.agent import Agent, InjectionConfig
 from agentscope.app import create_app
-from agentscope.app.message_bus import InMemoryMessageBus
+from agentscope.app.message_bus import MessageBus
 from agentscope.app.middleware import ToolOffloadMiddleware
 from agentscope.app.storage import StorageBase
-from agentscope.app.workspace_manager import (
-    DockerWorkspaceManager,
-    IsolationPolicy,
-    WorkspaceManagerBase,
-)
+from agentscope.app.workspace_manager import WorkspaceManagerBase
 from agentscope.middleware import MiddlewareBase
-from agentscope.tool import ToolBase
 from agentscope.workspace import WorkspaceBase
 from fastapi import FastAPI
 
-from app.config.app import cfg
-from app.config.loader import ROOT_DIR
-from app.runtime.catalog import AgentCatalog
-from app.runtime.context import ContextRegistry
-from app.runtime.models import ChatCredential, ModelClients
-from app.runtime.offloading import ToolExecutionMiddleware
-from app.runtime.resources import AgentResources, RoleMiddleware, RunControlMiddleware
-from app.runtime.workspaces import session_directory_middlewares
-
-
-class RuntimeAgent(Agent):
-    """设置 Agent 时区和工具取消行为。"""
-
-    def __init__(self, **kwargs: Any) -> None:
-        """设置提示词时区，为框架工具执行补齐取消收尾。"""
-        kwargs["middlewares"] = [
-            ToolExecutionMiddleware(mw) if isinstance(mw, ToolOffloadMiddleware) else mw
-            for mw in kwargs["middlewares"]
-        ]
-        super().__init__(
-            injection_config=InjectionConfig(timezone=cfg.runtime.timezone),
-            **kwargs,
-        )
+from .agents import AgentRegistry
+from .catalog import AgentCatalog
+from .context import ContextRegistry
+from .models import ChatCredential, ModelClients
+from .offloading import ToolExecutionMiddleware
+from .resources import RoleMiddleware, RunControlMiddleware, equip_resources
+from .runs import RunController
+from .teams import TeamService
+from .workspaces import session_directory_middlewares
 
 
 def create_runtime(
     storage: StorageBase,
     *,
-    workspace_manager: WorkspaceManagerBase | None = None,
+    message_bus: MessageBus,
+    workspace_manager: WorkspaceManagerBase,
     catalog: AgentCatalog,
+    injection_config: InjectionConfig,
+    context_ttl_seconds: float,
 ) -> FastAPI:
     """通过框架生命周期装配存储、工作空间、角色和运行资源。"""
-    contexts = ContextRegistry(storage, cfg.runtime.context_ttl_seconds)
-    model_clients = ModelClients()
-    resources = AgentResources(catalog)
-    role_tools: ContextVar[list[ToolBase] | None] = ContextVar(
-        "role_tools", default=None
-    )
-    if workspace_manager is None:
-        settings = cfg.workspace
-        workspace_manager = DockerWorkspaceManager(
-            str(ROOT_DIR / "data" / "workspaces"),
-            isolation=IsolationPolicy.PER_USER,
-            base_image=settings.base_image,
-            node_version=settings.node_version,
-            extra_pip=settings.extra_pip,
-            ttl=settings.ttl_seconds,
-            sweep_interval=settings.sweep_interval_seconds,
-        )
+    contexts = ContextRegistry(storage, context_ttl_seconds)
+    model_clients = ModelClients(catalog.definitions.models)
 
-    async def tools(user_id: str, agent_id: str, session_id: str) -> list[ToolBase]:
-        """按角色和会话上下文创建业务工具，成员 Agent 使用负责人 Agent 绑定的客户端。"""
-        _, definition = catalog.definition(user_id, agent_id)
-        context = await contexts.resolve(user_id, session_id)
-        cached = role_tools.get()
-        if cached is None:
-            cached = (
-                []
-                if context.intent != "active"
-                else [
-                    catalog.factories[path](context)
-                    for path in definition.tool_factories
-                ]
-            )
-            role_tools.set(cached)
-        return cached
+    class RuntimeAgent(Agent):
+        """将本实例的注入配置和工具取消收尾接入原生 Agent。"""
+
+        def __init__(self, **kwargs: Any) -> None:
+            """保留框架中间件，为后台工具补齐取消收尾。"""
+            kwargs["middlewares"] = [
+                ToolExecutionMiddleware(mw)
+                if isinstance(mw, ToolOffloadMiddleware)
+                else mw
+                for mw in kwargs["middlewares"]
+            ]
+            super().__init__(injection_config=injection_config, **kwargs)
 
     async def middlewares(
         user_id: str, agent_id: str, session_id: str, workspace: WorkspaceBase
     ) -> list[MiddlewareBase]:
         """为所有框架运行装配资源、角色能力和会话目录。"""
         model_clients.bind_task()
-        role_tools.set(None)
         _, definition = catalog.definition(user_id, agent_id)
         context = await contexts.resolve(user_id, session_id)
-        await resources.equip(
+        await equip_resources(
+            catalog,
             workspace,
             agent_id,
             session_id,
             definition,
             active=context.intent == "active",
         )
-        business_tools = {
-            tool.name for tool in await tools(user_id, agent_id, session_id)
-        }
+        business_tools = (
+            catalog.create_tools(definition, context)
+            if context.intent == "active"
+            else []
+        )
         return [
-            RunControlMiddleware(contexts, context, runtime.state.message_bus),
+            RunControlMiddleware(contexts, context, message_bus),
             RoleMiddleware(
                 definition,
                 catalog=catalog,
                 storage=storage,
-                message_bus=runtime.state.message_bus,
+                message_bus=message_bus,
                 workspace_manager=workspace_manager,
                 user_id=user_id,
                 agent_id=agent_id,
@@ -125,11 +91,10 @@ def create_runtime(
 
     runtime = create_app(
         storage=storage,
-        message_bus=InMemoryMessageBus(),
+        message_bus=message_bus,
         workspace_manager=workspace_manager,
         extra_credentials=[ChatCredential],
         extra_agent_middlewares=middlewares,
-        extra_agent_tools=tools,
         custom_agent_cls=RuntimeAgent,
         enable_scheduler=False,
         enable_channel_worker=False,
@@ -139,17 +104,21 @@ def create_runtime(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-        """等待框架运行任务退出后释放所有任务客户端及认证上下文。"""
+        """由框架管理运行资源，退出后释放模型客户端与绑定上下文。"""
+        await catalog.validate_skills()
         try:
             async with native_lifespan(app):
                 app.state.catalog = catalog
                 app.state.contexts = contexts
                 app.state.model_clients = model_clients
+                app.state.agents = AgentRegistry(app.state)
+                teams = TeamService(app.state)
+                app.state.teams = teams
+                app.state.runs = RunController(app.state, teams)
                 yield
         finally:
             await model_clients.close()
-            contexts.contexts.clear()
-            contexts.intents.clear()
+            contexts.clear()
 
     runtime.router.lifespan_context = lifespan
     return runtime

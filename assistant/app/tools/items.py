@@ -10,13 +10,14 @@ from loguru import logger
 from pydantic import ConfigDict, Field, validate_call
 
 from app.clients.erpnext import items
+from app.clients.erpnext.client import ERPNext
 from app.errors.agent import AgentError
 from app.runtime.context import RunContext
 
 
 def create_items_tool(context: RunContext) -> FunctionTool:
     """从认证运行上下文取得 ERPNext 客户端，创建只读物料查询工具。"""
-    erp = context.clients["erpnext"]
+    erp: ERPNext = context.clients["erpnext"]
 
     @validate_call(config=ConfigDict(strict=True))
     async def query_items(

@@ -3,8 +3,9 @@
 import json
 from typing import TypedDict
 
-from agentscope.app._service import SessionStatus
-from agentscope.app.message_bus import MessageBusKeys
+from agentscope.app._manager import ChatRunRegistry
+from agentscope.app._service import SessionService, SessionStatus
+from agentscope.app.message_bus import MessageBus, MessageBusKeys
 from agentscope.app.storage import SessionRecord, StorageBase
 from agentscope.event import RequireUserConfirmEvent
 from agentscope.message import ToolCallState
@@ -42,18 +43,20 @@ class TeamService:
 
     def __init__(self, runtime: State) -> None:
         """绑定框架存储及会话状态服务。"""
-        self.runtime = runtime
-        self.storage: StorageBase = runtime.storage
+        self._storage: StorageBase = runtime.storage
+        self._session_service: SessionService = runtime.session_service
+        self._run_registry: ChatRunRegistry = runtime.chat_run_registry
+        self._message_bus: MessageBus = runtime.message_bus
 
     async def scope(self, user_id: str, root: SessionRecord) -> list[SessionRecord]:
         """返回负责人 Agent 及当前成员 Agent 的会话，忽略已经删除的成员 Agent。"""
-        root = await self.storage.get_session(user_id, root.agent_id, root.id) or root
+        root = await self._storage.get_session(user_id, root.agent_id, root.id) or root
         rows = [root]
         if root.team_id:
-            team = await self.storage.get_team(user_id, root.team_id)
+            team = await self._storage.get_team(user_id, root.team_id)
             if team is not None and team.session_id == root.id:
                 for member in team.data.members:
-                    row = await self.storage.get_session(
+                    row = await self._storage.get_session(
                         user_id, member.agent_id, member.session_id
                     )
                     if row is not None:
@@ -67,11 +70,13 @@ class TeamService:
         background_tasks: dict[str, BackgroundTool] = {}
         running = False
         for row in await self.scope(user_id, root):
-            status = await self.runtime.session_service.get_session_status(
+            status = await self._session_service.get_session_status(
                 user_id, row.agent_id, row.id
             )
-            task = self.runtime.chat_run_registry.get(row.id)
-            tools = await self.runtime.message_bus.registry_getall(
+            if status is None:
+                continue
+            task = self._run_registry.get(row.id)
+            tools = await self._message_bus.registry_getall(
                 MessageBusKeys.bg_tasks(row.id)
             )
             background_tasks.update(
@@ -82,7 +87,7 @@ class TeamService:
                 or (task is not None and not task.done())
                 or bool(tools)
             )
-            agent = await self.storage.get_agent(user_id, row.agent_id)
+            agent = await self._storage.get_agent(user_id, row.agent_id)
             if row.id != root.id:
                 members.append(
                     {

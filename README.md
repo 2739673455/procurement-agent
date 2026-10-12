@@ -76,20 +76,30 @@ Bash 的相对路径以会话目录为起点；Read、Write、Edit 使用绝对�
 
 ```text
 assistant/
-├── app/config/              # app、agents、mcp 配置定义、加载与校验
-├── app/runtime/              # 角色目录、任务上下文、模型资源、工作空间及框架装配
-├── app/tools/                # 业务工具和工具工厂
-├── app/services/
-│   ├── agents.py            # 用户角色与模型配置登记
-│   ├── sessions.py          # 认证用户的会话操作
-│   ├── runs.py              # 开始、中断、恢复、取消及工具确认
-│   └── teams.py             # 原生 Agent 团队范围及状态汇总
-├── conf/agents.yaml         # 模型定义、默认角色与各角色的能力引用
-├── conf/mcp.yaml            # AgentScope 原生 MCPClient 配置
+├── app/config/              # 项目配置加载
+├── app/runtime/             # 可独立复制的 AgentScope 运行模块
+│   ├── config.py            # Agent 与模型配置类型
+│   ├── catalog.py           # 能力引用与资源目录
+│   ├── agents.py            # Agent 与模型引用登记
+│   ├── runs.py              # 开始、中断、恢复、取消与工具确认
+│   ├── teams.py             # 原生团队范围和状态汇总
+│   └── bootstrap.py         # 框架装配与生命周期
+├── app/tools/               # 采购业务工具
+├── app/services/            # 认证用户的会话、附件和模型输入
+├── conf/agents.yaml         # 模型、默认入口与 Agent 能力
+├── conf/mcp.yaml            # 原生 MCPClient 配置
 └── resources/
-    ├── prompts/             # procurement.md、item_researcher.md 等角色提示词
-    └── skills/              # 完整 Skill 目录，含 SKILL.md 和辅助文件
+    ├── prompts/             # Agent 提示词
+    └── skills/              # SKILL.md 和辅助文件
 ```
+
+`app/runtime/` 可作为完整 Python 包复制到其他项目，内部使用相对导入，不读取项目配置或环境变量。依赖 AgentScope 2.0.9（`service`、`storage-sql` 扩展）、FastAPI 和 Pydantic；使用 Docker 时再启用 `workspace-docker` 扩展。
+
+调用方通过 `AgentCatalog` 提供 `AgentDefinitions`、原生 MCP 客户端映射、提示词基目录和 Skill 根目录，再向 `create_runtime()` 传入原生存储、消息总线、工作空间管理器、`InjectionConfig` 和上下文有效期。配置可以来自 YAML、代码或其他来源。
+
+进入返回应用的生命周期后，`state.agents` 登记 Agent，`state.runs` 控制运行，`state.teams` 读取团队状态。用户标识使用调用方提供的字符串，工具通过 `RunContext.clients` 获取外部客户端。运行错误以 `RunError.code` 表达，由应用转换成 HTTP 响应。
+
+推理循环、模型提供商选择、消息和状态存储、后台工具执行、团队邀请与通信、事件流、容器生命周期均使用框架实现。运行模块补充能力分配、会话工作目录、团队整体中断与恢复、客户端释放，以及工具取消收尾。
 
 `agents.yaml` 在顶层 `models` 定义可用模型，每个 Agent 的 `model` 必须引用其中一个配置名。各角色声明名称、说明、提示词文件、工作空间工具、业务工具工厂、MCP 服务、Skill、可邀请的协作 Agent 和运行策略。`context` 与 `react` 直接使用 AgentScope 的 `ContextConfig` 和 `ReActConfig`。启动时校验全部能力引用及 Skill 元数据，所有应用配置须显式提供。
 

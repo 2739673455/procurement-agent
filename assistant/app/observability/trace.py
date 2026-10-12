@@ -27,12 +27,12 @@ class TraceMiddleware:
 
     def __init__(self, app: ASGIApp) -> None:
         """保存需要追踪的下游 ASGI 应用。"""
-        self.app = app
+        self._app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """设置请求追踪上下文，在完整响应结束后记录耗时并恢复上下文。"""
         if scope["type"] != "http":
-            await self.app(scope, receive, send)
+            await self._app(scope, receive, send)
             return
         headers = Headers(scope=scope)
         request_id = _identifier(headers.get("X-Request-ID"))
@@ -66,7 +66,7 @@ class TraceMiddleware:
 
         try:
             try:
-                await self.app(scope, receive, traced_send)
+                await self._app(scope, receive, traced_send)
             except Exception as exc:
                 if started:
                     logger.opt(exception=exc).error("响应开始后发生异常")

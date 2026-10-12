@@ -21,11 +21,11 @@ class AttachmentService:
 
     def __init__(self, workspace_manager: WorkspaceManagerBase) -> None:
         """绑定与 Agent 执行相同的工作空间管理器。"""
-        self.workspace_manager = workspace_manager
+        self._workspace_manager = workspace_manager
 
     async def _workspace(self, user_id: str, row: SessionRecord) -> WorkspaceBase:
         """根据已认证会话获取用户工作空间。"""
-        return await self.workspace_manager.get_workspace(
+        return await self._workspace_manager.get_workspace(
             user_id, row.agent_id, row.id, row.config.workspace_id
         )
 

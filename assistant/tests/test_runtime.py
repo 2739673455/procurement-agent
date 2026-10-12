@@ -15,10 +15,19 @@ from agentscope.message import Msg, ToolCallBlock, ToolResultBlock
 from agentscope.model import ChatResponse
 from agentscope.permission import PermissionBehavior, PermissionDecision
 from agentscope.tool import FunctionTool, ToolChoice, ToolChunk
-from test_runs import Model, command, response, run_turn, service_at, use_models, watch
+from test_runs import (
+    Model,
+    command,
+    configured_catalog,
+    response,
+    run_turn,
+    service_at,
+    use_models,
+    watch,
+)
 
-from app.errors.agent import AgentError
 from app.runtime.context import CONTROL_KEY
+from app.runtime.errors import RunError
 from app.tools import items as item_tools
 
 
@@ -60,7 +69,7 @@ def test_interrupt_restart_resume_and_cancel(
             assert (await command(service, "messages", identifier))["resumable"]
             async with watch(service, identifier):
                 await command(service, "resume", identifier, erp="fresh-credential")
-                await service.runtime.chat_run_registry.get(identifier)
+                await service._runtime.chat_run_registry.get(identifier)
             history = (await command(service, "messages", identifier))["messages"]
             assert len([msg for msg in history if msg.role == "user"]) == 1
             assert any(
@@ -68,9 +77,9 @@ def test_interrupt_restart_resume_and_cancel(
             )
             await command(service, "cancel", identifier)
             assert not (await command(service, "messages", identifier))["resumable"]
-            with pytest.raises(AgentError) as failure:
+            with pytest.raises(RunError) as failure:
                 await command(service, "resume", identifier)
-            assert failure.value.status == 409
+            assert failure.value.code == "conflict"
             assert (await command(service, "messages", identifier))[
                 "messages"
             ] == history
@@ -120,14 +129,14 @@ def test_native_permission_confirmation_and_parked_interrupt(
                 confirm_results=[ConfirmResult(confirmed=True, tool_call=forged)],
             )
             await command(service, "confirm", identifier, confirmation=result)
-            await service.runtime.chat_run_registry.get(identifier)
+            await service._runtime.chat_run_registry.get(identifier)
             assert called == [[["item_code", "like", "%bolt%"]]]
             await run_turn(service, identifier, message="再查询")
             assert (await command(service, "messages", identifier))["confirmations"]
             await command(service, "interrupt", identifier)
             state = await command(service, "messages", identifier)
             assert state["resumable"] and not state["confirmations"]
-            with pytest.raises(AgentError):
+            with pytest.raises(RunError):
                 await command(service, "confirm", identifier, confirmation=result)
             assert called == [[["item_code", "like", "%bolt%"]]]
 
@@ -186,8 +195,8 @@ def test_native_team_context_controls_and_cleanup(
                             {"name": "采购查询", "description": "检索物料"},
                         )
                     if leader_count == 2:
-                        user_id = service.agents.catalog.user_id(("site", "owner"))
-                        agent_id = service.agents.catalog.agent_id(
+                        user_id, _ = service._identity(("site", "owner"))
+                        agent_id = service._runtime.catalog.agent_id(
                             user_id, "item_researcher"
                         )
                         return tool_response(
@@ -220,8 +229,8 @@ def test_native_team_context_controls_and_cleanup(
         monkeypatch.setattr(_chat, "get_model", get_model)
         async with service_at(tmp_path) as service:
             identifier = (await command(service, "create"))["id"]
-            user_id = service.agents.catalog.user_id(("site", "owner"))
-            initial_root = await service.storage.get_session(user_id, "", identifier)
+            user_id, _ = service._identity(("site", "owner"))
+            initial_root = await service._storage.get_session(user_id, "", identifier)
             assert initial_root is not None
             await command(
                 service, "send", identifier, message="组织查询", erp="leader-client"
@@ -231,7 +240,7 @@ def test_native_team_context_controls_and_cleanup(
             assert state["running"] and len(state["members"]) == 1
             member_id = state["members"][0]["session_id"]
             assert initial_root.team_id is None
-            await service.runs.stop(
+            await service._runs.stop(
                 user_id,
                 initial_root,
                 {"erpnext": "leader-client"},
@@ -242,9 +251,9 @@ def test_native_team_context_controls_and_cleanup(
                 return not (await command(service, "messages", identifier))["running"]
 
             await eventually(stopped)
-            user_id = service.agents.catalog.user_id(("site", "owner"))
-            root = await service.storage.get_session(user_id, "", identifier)
-            member = await service.storage.get_session(user_id, "", member_id)
+            user_id, _ = service._identity(("site", "owner"))
+            root = await service._storage.get_session(user_id, "", identifier)
+            member = await service._storage.get_session(user_id, "", member_id)
             assert root is not None and member is not None
             assert root.state.middle_context[CONTROL_KEY] == "interrupted"
             assert member.state.middle_context[CONTROL_KEY] == "interrupted"
@@ -252,7 +261,7 @@ def test_native_team_context_controls_and_cleanup(
             await command(service, "resume", identifier, erp="fresh-client")
 
             async def finished() -> bool:
-                history, _ = await service.storage.list_messages(
+                history, _ = await service._storage.list_messages(
                     user_id, member_id, limit=1
                 )
                 return (
@@ -267,8 +276,10 @@ def test_native_team_context_controls_and_cleanup(
             ] == []
             assert len((await command(service, "list"))["sessions"]) == 1
             await command(service, "cancel", identifier)
-            assert await service.storage.get_session(user_id, "", member_id) is None
-            assert await service.storage.get_agent(user_id, member.agent_id) is not None
+            assert await service._storage.get_session(user_id, "", member_id) is None
+            assert (
+                await service._storage.get_agent(user_id, member.agent_id) is not None
+            )
             assert (await command(service, "messages", identifier))["messages"]
         for model in models:
             model.client.close.assert_awaited_once()
@@ -282,6 +293,8 @@ def test_native_mcp_and_skill_role_resources(
     """调用真实 STDIO MCP，并验证完整 Skill 文件及角色能力隔离。"""
 
     async def scenario() -> None:
+        from agentscope.agent import InjectionConfig
+        from agentscope.app.message_bus import InMemoryMessageBus
         from agentscope.app.storage import AsyncSQLAlchemyStorage
         from agentscope.app.workspace_manager import (
             IsolationPolicy,
@@ -290,20 +303,19 @@ def test_native_mcp_and_skill_role_resources(
 
         from app.config.mcp import MCPDefinitions
         from app.runtime.bootstrap import create_runtime
-        from app.runtime.catalog import AgentCatalog
         from app.services.sessions import SessionService
 
         server = tmp_path / "mcp_server.py"
         server.write_text(
             'from mcp.server.fastmcp import FastMCP\nmcp = FastMCP("test")\n@mcp.tool()\ndef echo(value: str) -> str:\n    return "mcp:" + value\nmcp.run()\n'
         )
-        catalog = AgentCatalog()
+        catalog = configured_catalog()
         definitions = catalog.definitions.model_copy(deep=True)
         definitions.agents["procurement"].mcps = ["echo"]
         # 为另一个角色收敛能力，验证资源不会跨角色泄漏。
         definitions.agents["item_researcher"].tool_factories = []
         definitions.agents["item_researcher"].skills = []
-        catalog = AgentCatalog(
+        catalog = configured_catalog(
             definitions=definitions,
             mcps=MCPDefinitions.model_validate(
                 {
@@ -318,7 +330,7 @@ def test_native_mcp_and_skill_role_resources(
                         }
                     }
                 }
-            ),
+            ).servers,
         )
         model = Model([])
 
@@ -345,6 +357,9 @@ def test_native_mcp_and_skill_role_resources(
         use_models(monkeypatch, queued_models)
         app = create_runtime(
             AsyncSQLAlchemyStorage(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}"),
+            message_bus=InMemoryMessageBus(),
+            injection_config=InjectionConfig(timezone="Asia/Shanghai"),
+            context_ttl_seconds=3600,
             workspace_manager=LocalWorkspaceManager(
                 str(tmp_path / "workspaces"), isolation=IsolationPolicy.PER_USER
             ),
@@ -359,8 +374,8 @@ def test_native_mcp_and_skill_role_resources(
             ], [event for event in events if event.get("finished_reason") == "error"]
             state = await command(service, "messages", identifier)
             confirmation = state["confirmations"][0]
-            user_id, agent_id = service.agents.identity(("site", "owner"))
-            row = await service.storage.get_session(user_id, agent_id, identifier)
+            user_id, agent_id = service._identity(("site", "owner"))
+            row = await service._storage.get_session(user_id, agent_id, identifier)
             assert row is not None
             workspace = await app.state.workspace_manager.get_workspace(
                 user_id, agent_id, identifier, row.config.workspace_id
@@ -392,7 +407,7 @@ def test_native_mcp_and_skill_role_resources(
                 ]
             )
             await command(service, "resume", identifier)
-            await service.runtime.chat_run_registry.get(identifier)
+            await service._runtime.chat_run_registry.get(identifier)
             confirmation = (await command(service, "messages", identifier))[
                 "confirmations"
             ][0]
@@ -408,11 +423,11 @@ def test_native_mcp_and_skill_role_resources(
                     ],
                 ),
             )
-            await service.runtime.chat_run_registry.get(identifier)
+            await service._runtime.chat_run_registry.get(identifier)
             history = (await command(service, "messages", identifier))["messages"]
             assert "mcp:hello" in str(history[-1].content)
-            user_id, agent_id = service.agents.identity(("site", "owner"))
-            row = await service.storage.get_session(user_id, agent_id, identifier)
+            user_id, agent_id = service._identity(("site", "owner"))
+            row = await service._storage.get_session(user_id, agent_id, identifier)
             assert row is not None
             workspace = await app.state.workspace_manager.get_workspace(
                 user_id, agent_id, identifier, row.config.workspace_id
@@ -488,9 +503,8 @@ def test_mcp_yaml_uses_service_keys_as_client_names(tmp_path: Path) -> None:
 
 def test_tool_factory_configuration_rejects_invalid_references() -> None:
     """在启动时拒绝不存在的工厂、非函数引用和不接受上下文的函数。"""
-    from app.runtime.catalog import AgentCatalog
 
-    definitions = AgentCatalog().definitions.model_copy(deep=True)
+    definitions = configured_catalog().definitions.model_copy(deep=True)
     for path in (
         "items",
         "app.tools.items:missing_factory",
@@ -499,4 +513,4 @@ def test_tool_factory_configuration_rejects_invalid_references() -> None:
     ):
         definitions.agents["procurement"].tool_factories = [path]
         with pytest.raises(ValueError, match="工具工厂"):
-            AgentCatalog(definitions=definitions)
+            configured_catalog(definitions=definitions)

@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+import httpx
 from fastapi import Request
 
 from app.clients.erpnext.client import ERPNext
@@ -21,7 +22,8 @@ class AuthenticatedUser:
 
 async def authenticate(command: Command, request: Request) -> AuthenticatedUser:
     """用请求中的 sid 向 ERPNext 核实身份，并设置请求日志的用户信息。"""
-    erp = ERPNext(command.sid.get_secret_value(), request.app.state.erpnext_http)
+    client: httpx.AsyncClient = request.app.state.erpnext_http
+    erp = ERPNext(command.sid.get_secret_value(), client)
     user = await erp.authenticate()
     context.user_id_ctx.set(user)
     return AuthenticatedUser((cfg.erpnext.site, user), erp)
@@ -29,4 +31,5 @@ async def authenticate(command: Command, request: Request) -> AuthenticatedUser:
 
 def session_service(request: Request) -> SessionService:
     """从应用生命周期初始化的组件中获取会话业务服务。"""
-    return request.app.state.sessions
+    service: SessionService = request.app.state.sessions
+    return service

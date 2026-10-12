@@ -10,15 +10,18 @@ from typing import Any, cast
 
 import aiodocker
 import pytest
+from agentscope.agent import Agent, InjectionConfig
+from agentscope.app.message_bus import InMemoryMessageBus
 from agentscope.app.storage import AsyncSQLAlchemyStorage
+from agentscope.app.workspace_manager import DockerWorkspaceManager, IsolationPolicy
 from agentscope.message import TextBlock, ToolResultState
 from agentscope.tool import Edit, Read, ToolBase, ToolChunk, Write
-from test_runs import Model, response, run_turn, use_models
+from test_runs import Model, configured_catalog, response, run_turn, use_models
 
 from app.clients.erpnext.client import ERPNext
+from app.config.app import cfg
 from app.contracts.sessions import AttachmentUpload
 from app.runtime import bootstrap as runtime
-from app.runtime.catalog import AgentCatalog
 from app.services.sessions import SessionService
 
 
@@ -30,18 +33,9 @@ def test_docker_user_isolation_and_session_directories(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """检查用户容器隔离、会话目录绑定、共享访问、删除及文件恢复。"""
-    monkeypatch.setattr(runtime, "ROOT_DIR", tmp_path)
     host_file = tmp_path / "host-only.txt"
     host_file.write_text("host-only", encoding="utf-8")
-    agents: dict[str, runtime.RuntimeAgent] = {}
-    initialize_agent = runtime.RuntimeAgent.__init__
-
-    def capture_agent(agent: runtime.RuntimeAgent, **kwargs: Any) -> None:
-        """记录框架装配的 Agent，检查运行中实际绑定的工具实例。"""
-        initialize_agent(agent, **kwargs)
-        agents[agent.state.session_id] = agent
-
-    monkeypatch.setattr(runtime.RuntimeAgent, "__init__", capture_agent)
+    agents: dict[str, Agent] = {}
 
     async def tool_text(tool: ToolBase, **kwargs: Any) -> str:
         """执行框架工具，校验成功并提取输出文本。"""
@@ -68,18 +62,38 @@ def test_docker_user_isolation_and_session_directories(
         use_models(monkeypatch, models.copy())
         app = runtime.create_runtime(
             AsyncSQLAlchemyStorage(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}"),
-            catalog=AgentCatalog(),
+            catalog=configured_catalog(),
+            message_bus=InMemoryMessageBus(),
+            injection_config=InjectionConfig(timezone=cfg.runtime.timezone),
+            context_ttl_seconds=cfg.runtime.context_ttl_seconds,
+            workspace_manager=DockerWorkspaceManager(
+                str(tmp_path / "workspaces"),
+                isolation=IsolationPolicy.PER_USER,
+                base_image=cfg.workspace.base_image,
+                node_version=cfg.workspace.node_version,
+                extra_pip=cfg.workspace.extra_pip,
+                ttl=cfg.workspace.ttl_seconds,
+                sweep_interval=cfg.workspace.sweep_interval_seconds,
+            ),
         )
+        initialize_agent = app.state.custom_agent_cls.__init__
+
+        def capture_agent(agent: Agent, **kwargs: Any) -> None:
+            """记录框架装配的 Agent，检查实际工具绑定。"""
+            initialize_agent(agent, **kwargs)
+            agents[agent.state.session_id] = agent
+
+        monkeypatch.setattr(app.state.custom_agent_cls, "__init__", capture_agent)
         container_names = set()
         async with app.router.lifespan_context(app):
             service = SessionService(app.state)
             owner = ("site", "owner")
-            user_id, agent_id = service.agents.identity(owner)
+            user_id, agent_id = service._identity(owner)
             workspaces = []
             for session_owner in [owner, owner, ("site", "another-owner")]:
-                session_user, session_agent = service.agents.identity(session_owner)
+                session_user, session_agent = service._identity(session_owner)
                 session_id = (await service.create(session_owner))["id"]
-                record = await service.storage.get_session(
+                record = await service._storage.get_session(
                     session_user, session_agent, session_id
                 )
                 assert record is not None

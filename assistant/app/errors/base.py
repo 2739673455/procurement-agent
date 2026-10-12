@@ -38,7 +38,7 @@ class ProblemError(Exception):
         """构造可序列化为 Problem Details 的应用异常。"""
         self.title = title or self.title
         self.detail = detail
-        self.extensions = dict(extensions or {})
+        self.extensions: dict[str, Any] = dict(extensions or {})
         if type is not None:
             self.type = type
         if status is not None:

@@ -6,19 +6,23 @@ from contextlib import asynccontextmanager
 
 import httpx
 import uvicorn
+from agentscope.agent import InjectionConfig
+from agentscope.app.message_bus import InMemoryMessageBus
 from agentscope.app.storage import AsyncSQLAlchemyStorage
+from agentscope.app.workspace_manager import DockerWorkspaceManager, IsolationPolicy
 from fastapi import FastAPI
 from loguru import logger
 from sqlalchemy import URL
 
 from app.api.sessions import router
+from app.config import agents, mcp
 from app.config.app import cfg
+from app.config.loader import ROOT_DIR
 from app.errors.base import ProblemDetails
 from app.errors.exc_handlers import register_exception_handlers
 from app.observability.log import setup_logger
 from app.observability.trace import TraceMiddleware
-from app.runtime.bootstrap import create_runtime
-from app.runtime.catalog import AgentCatalog
+from app.runtime import AgentCatalog, create_runtime
 from app.services.sessions import SessionService
 
 
@@ -40,7 +44,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             url.render_as_string(hide_password=False),
             engine_kwargs={"pool_pre_ping": True, "hide_parameters": True},
         ),
-        catalog=AgentCatalog(),
+        catalog=AgentCatalog(
+            definitions=agents.cfg,
+            mcps=mcp.cfg.servers,
+            base_dir=ROOT_DIR,
+            skills_dir=ROOT_DIR / "resources" / "skills",
+        ),
+        message_bus=InMemoryMessageBus(),
+        workspace_manager=DockerWorkspaceManager(
+            str(ROOT_DIR / "data" / "workspaces"),
+            isolation=IsolationPolicy.PER_USER,
+            base_image=cfg.workspace.base_image,
+            node_version=cfg.workspace.node_version,
+            extra_pip=cfg.workspace.extra_pip,
+            ttl=cfg.workspace.ttl_seconds,
+            sweep_interval=cfg.workspace.sweep_interval_seconds,
+        ),
+        injection_config=InjectionConfig(timezone=cfg.runtime.timezone),
+        context_ttl_seconds=cfg.runtime.context_ttl_seconds,
     )
     erpnext = cfg.erpnext
     async with (
