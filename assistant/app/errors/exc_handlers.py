@@ -67,6 +67,7 @@ def _problem_error_handler(request: Request, exc: ProblemError) -> JSONResponse:
 def _run_error_handler(request: Request, exc: RunError) -> JSONResponse:
     """将独立运行模块的错误转换为应用响应。"""
     status = {
+        "invalid_input": HTTPStatus.BAD_REQUEST,
         "not_found": HTTPStatus.NOT_FOUND,
         "context_expired": HTTPStatus.UNAUTHORIZED,
         "conflict": HTTPStatus.CONFLICT,

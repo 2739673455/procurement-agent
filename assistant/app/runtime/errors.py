@@ -2,7 +2,9 @@
 
 from typing import Literal
 
-type RunErrorCode = Literal["not_found", "context_expired", "conflict", "unavailable"]
+type RunErrorCode = Literal[
+    "invalid_input", "not_found", "context_expired", "conflict", "unavailable"
+]
 
 
 class RunError(Exception):

@@ -70,10 +70,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             headers={"Host": erpnext.site},
             timeout=erpnext.timeout_seconds,
         ) as erpnext_http,
-        runtime.router.lifespan_context(runtime),
+        runtime,
     ):
         app.state.erpnext_http = erpnext_http
-        app.state.sessions = SessionService(runtime.state)
+        app.state.sessions = SessionService(runtime)
         logger.info("应用资源初始化完成")
         yield
     logger.info("应用资源释放完成")

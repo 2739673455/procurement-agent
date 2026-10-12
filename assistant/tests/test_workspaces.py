@@ -76,28 +76,28 @@ def test_docker_user_isolation_and_session_directories(
                 sweep_interval=cfg.workspace.sweep_interval_seconds,
             ),
         )
-        initialize_agent = app.state.custom_agent_cls.__init__
+        initialize_agent = app._app.state.custom_agent_cls.__init__
 
         def capture_agent(agent: Agent, **kwargs: Any) -> None:
             """记录框架装配的 Agent，检查实际工具绑定。"""
             initialize_agent(agent, **kwargs)
             agents[agent.state.session_id] = agent
 
-        monkeypatch.setattr(app.state.custom_agent_cls, "__init__", capture_agent)
+        monkeypatch.setattr(app._app.state.custom_agent_cls, "__init__", capture_agent)
         container_names = set()
-        async with app.router.lifespan_context(app):
-            service = SessionService(app.state)
+        async with app:
+            service = SessionService(app)
             owner = ("site", "owner")
             user_id, agent_id = service._identity(owner)
             workspaces = []
             for session_owner in [owner, owner, ("site", "another-owner")]:
                 session_user, session_agent = service._identity(session_owner)
                 session_id = (await service.create(session_owner))["id"]
-                record = await service._storage.get_session(
+                record = await service._runtime._storage.get_session(
                     session_user, session_agent, session_id
                 )
                 assert record is not None
-                workspace = await app.state.workspace_manager.get_workspace(
+                workspace = await app._app.state.workspace_manager.get_workspace(
                     session_user, session_agent, session_id, record.config.workspace_id
                 )
                 workspaces.append((session_id, workspace))
@@ -218,8 +218,8 @@ def test_docker_user_isolation_and_session_directories(
             assert checks.exit_code == 0
             assert json.loads(checks.stdout) == [True, False, False, False, False]
 
-            await app.state.workspace_manager.close(first.workspace_id)
-            restored = await app.state.workspace_manager.get_workspace(
+            await app._app.state.workspace_manager.close(first.workspace_id)
+            restored = await app._app.state.workspace_manager.get_workspace(
                 user_id, agent_id, session_id, first.workspace_id
             )
             assert await restored.get_backend().read_file(first_file) == b"session-A"

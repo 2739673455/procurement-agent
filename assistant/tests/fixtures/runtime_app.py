@@ -13,8 +13,9 @@ from unittest.mock import patch
 import httpx
 from agentscope.agent import InjectionConfig
 from agentscope.app.message_bus import InMemoryMessageBus
-from agentscope.app.storage import AsyncSQLAlchemyStorage, SessionConfig, SessionNaming
+from agentscope.app.storage import AsyncSQLAlchemyStorage
 from agentscope.app.workspace_manager import IsolationPolicy, LocalWorkspaceManager
+from agentscope.mcp import MCPClient
 from agentscope.message import UserMsg
 from agentscope.model import OpenAIChatModel
 
@@ -43,9 +44,24 @@ async def main() -> None:
     assert "app" not in sys.modules
     root = Path.cwd()
     (root / "prompt.md").write_text("你是一个工具助手。")
+    skill_dir = root / "skills" / "greeting"
+    (skill_dir / "references").mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: greeting\ndescription: Greeting guide\n---\nRead references/style.txt"
+    )
+    (skill_dir / "references" / "style.txt").write_text("Be concise.")
+    server = root / "mcp_server.py"
+    server.write_text(
+        "from mcp.server.fastmcp import FastMCP\n"
+        'mcp = FastMCP("greeting")\n'
+        '@mcp.tool(annotations={"readOnlyHint": True})\n'
+        'def greet() -> str:\n    return "hello-from-mcp"\n'
+        "mcp.run()\n"
+    )
     calls: Counter[str] = Counter()
     entered = {name: asyncio.Event() for name in ("alpha", "beta")}
     clients = []
+    storages: dict[str, AsyncSQLAlchemyStorage] = {}
 
     async def respond(request: httpx.Request) -> httpx.Response:
         """校验实例配置与工具结果，暂停第二次模型请求供中断。"""
@@ -70,6 +86,26 @@ async def main() -> None:
         results = [item for item in payload["messages"] if item["role"] == "tool"]
         assert results and f"{name}-resource" in str(results[0]["content"])
         if calls[name] == 2:
+            mcp_name = next(
+                tool["function"]["name"]
+                for tool in payload["tools"]
+                if "greet" in tool["function"]["name"]
+            )
+            return stream(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "greet-1",
+                            "type": "function",
+                            "function": {"name": mcp_name, "arguments": "{}"},
+                        }
+                    ]
+                },
+                "tool_calls",
+            )
+        assert "hello-from-mcp" in str(results)
+        if calls[name] == 3:
             entered[name].set()
             await asyncio.Event().wait()
         return stream({"content": f"{name}-done"}, "stop")
@@ -114,8 +150,8 @@ async def main() -> None:
                                 "model": "shared-key",
                                 "builtin_tools": [],
                                 "tool_factories": ["external_tools:create_echo"],
-                                "mcps": [],
-                                "skills": [],
+                                "mcps": ["greeting"],
+                                "skills": ["greeting"],
                                 "members": [],
                                 "context": {},
                                 "react": {},
@@ -125,12 +161,27 @@ async def main() -> None:
                 )
                 catalog = runtime.AgentCatalog(
                     definitions=definitions,
-                    mcps={},
+                    mcps={
+                        "greeting": MCPClient.model_validate(
+                            {
+                                "name": "greeting",
+                                "is_stateful": True,
+                                "mcp_config": {
+                                    "type": "stdio_mcp",
+                                    "command": sys.executable,
+                                    "args": [str(server)],
+                                },
+                            }
+                        )
+                    },
                     base_dir=root,
                     skills_dir=root / "skills",
                 )
+                storage = storages[name] = AsyncSQLAlchemyStorage(
+                    f"sqlite+aiosqlite:///{root / name}.db"
+                )
                 app = runtime.create_runtime(
-                    AsyncSQLAlchemyStorage(f"sqlite+aiosqlite:///{root / name}.db"),
+                    storage,
                     catalog=catalog,
                     message_bus=InMemoryMessageBus(),
                     workspace_manager=LocalWorkspaceManager(
@@ -139,32 +190,17 @@ async def main() -> None:
                     injection_config=InjectionConfig(timezone="UTC"),
                     context_ttl_seconds=60,
                 )
-                await stack.enter_async_context(app.router.lifespan_context(app))
-                user = "opaque-user"
-                agent_id = catalog.agent_id(user, "helper")
-                models = await app.state.agents.configure_user(user)
-                workspace_id = await app.state.workspace_manager.assign_workspace_id(
-                    user_id=user, agent_id=agent_id, session_id=name
-                )
-                row = await app.state.storage.upsert_session(
-                    user,
-                    agent_id,
-                    SessionConfig(
-                        workspace_id=workspace_id,
-                        chat_model_config=models["helper"],
-                        naming=SessionNaming(auto=False),
-                    ),
-                    session_id=name,
-                )
-                instances.append((app.state, row, name))
+                await stack.enter_async_context(app)
+                row = await app.create("opaque-user")
+                instances.append((app, row, name))
 
             # 同一会话的并发开始在运行模块内串行检查。
             state, row, name = instances[0]
             results = await asyncio.gather(
                 *(
-                    state.runs.start(
+                    state.send(
                         "opaque-user",
-                        row,
+                        row.id,
                         UserMsg(name="user", content="查询"),
                         {"value": f"{name}-resource"},
                     )
@@ -177,9 +213,9 @@ async def main() -> None:
             ]
             assert len(failures) == 1 and failures[0].code == "conflict"
             state, row, name = instances[1]
-            await state.runs.start(
+            await state.send(
                 "opaque-user",
-                row,
+                row.id,
                 UserMsg(name="user", content="查询"),
                 {"value": f"{name}-resource"},
             )
@@ -187,27 +223,32 @@ async def main() -> None:
                 asyncio.gather(*(event.wait() for event in entered.values())), 10
             )
             for state, row, name in instances:
-                await state.runs.stop(
+                await state.interrupt(
                     "opaque-user",
-                    row,
+                    row.id,
                     {"value": f"{name}-resource"},
-                    intent="interrupted",
                 )
-                assert await state.runs.resumable("opaque-user", row)
-                await state.runs.resume(
-                    "opaque-user", row, {"value": f"{name}-resource"}
-                )
-                await state.chat_run_registry.get(row.id)
-                messages, _ = await state.storage.list_messages("opaque-user", row.id)
+                assert (await state.messages("opaque-user", row.id))["resumable"]
+                await state.resume("opaque-user", row.id, {"value": f"{name}-resource"})
+                await state.wait("opaque-user", row.id)
+                messages = (await state.messages("opaque-user", row.id))["messages"]
                 assert (
                     len([message for message in messages if message.role == "user"])
                     == 1
                 )
                 assert messages[-1].get_text_content() == f"{name}-done"
-                await state.runs.stop("opaque-user", row, {}, intent="cancelled")
-                assert not await state.runs.resumable("opaque-user", row)
-                records = await state.storage.list_credentials("opaque-user")
+                await state.cancel("opaque-user", row.id)
+                assert not (await state.messages("opaque-user", row.id))["resumable"]
+                records = await storages[name].list_credentials("opaque-user")
                 assert "secret" not in str([record.data for record in records])
+                workspace = await state.workspace_manager.get_workspace(
+                    "opaque-user", row.agent_id, row.id, row.config.workspace_id
+                )
+                skills = await workspace.list_skills(agent_id=row.agent_id)
+                assert [skill.name for skill in skills] == ["greeting"]
+                assert (
+                    Path(skills[0].dir) / "references" / "style.txt"
+                ).read_text() == "Be concise."
     assert clients and all(client.is_closed() for client in clients)
     assert "app" not in sys.modules
 
