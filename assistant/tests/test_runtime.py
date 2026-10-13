@@ -10,6 +10,7 @@ from typing import Any, Never
 
 import pytest
 from agentscope.app._service import SessionStatus
+from agentscope.credential import CredentialFactory
 from agentscope.event import ConfirmResult, UserConfirmResultEvent
 from agentscope.message import Msg, ToolCallBlock, ToolResultBlock
 from agentscope.model import ChatResponse
@@ -167,7 +168,6 @@ def test_native_team_context_controls_and_cleanup(
     async def scenario() -> None:
         from agentscope.app._service import _chat
 
-        from app.runtime.models import _model_clients
         from app.tools import items
 
         owners = []
@@ -187,10 +187,9 @@ def test_native_team_context_controls_and_cleanup(
         async def get_model(*args: Any, **kwargs: Any) -> Model:
             """根据实际可用工具驱动负责人 Agent 和成员 Agent，覆盖框架自动唤醒路径。"""
             model = Model([])
+            record = await args[2].resolve_credential(args[0], args[1].credential_id)
+            model.credential = CredentialFactory.from_dict(record.data)
             models.append(model)
-            stack = _model_clients.get()
-            assert stack is not None
-            stack.push_async_callback(model.client.close)
 
             async def call(
                 model_name: str,

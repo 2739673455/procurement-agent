@@ -239,16 +239,10 @@ class Runtime:
         incoming: Msg,
         clients: dict[str, Any],
     ) -> ChatTriggerResponse:
-        """刷新角色配置并提交原生消息；与删除、改名及运行控制串行。"""
+        """使用会话中已登记的原生模型配置提交消息。"""
         async with self._lock:
             row = await self._get_session(user_id, session_id)
             await self._runs.require_idle(user_id, row)
-            key, _ = self.catalog.definition(user_id, row.agent_id)
-            models = await self._agents.configure_user(user_id)
-            row.config.chat_model_config = models[key]
-            await self._storage.upsert_session(
-                user_id, row.agent_id, row.config, session_id=row.id
-            )
             return await self._runs.start(user_id, row, incoming, clients)
 
     async def interrupt(

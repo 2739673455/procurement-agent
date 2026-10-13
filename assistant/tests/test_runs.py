@@ -6,14 +6,14 @@ from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Never, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from agentscope.agent import Agent, InjectionConfig
 from agentscope.app.message_bus import InMemoryMessageBus, MessageBusKeys
 from agentscope.app.storage import AsyncSQLAlchemyStorage
 from agentscope.app.workspace_manager import IsolationPolicy, LocalWorkspaceManager
-from agentscope.credential import OpenAICredential
+from agentscope.credential import CredentialFactory, OpenAICredential
 from agentscope.event import AgentEvent
 from agentscope.formatter import OpenAIChatFormatter
 from agentscope.mcp import MCPClient
@@ -31,9 +31,8 @@ from app.errors.agent import AgentError
 from app.runtime import Runtime
 from app.runtime.bootstrap import create_runtime
 from app.runtime.catalog import AgentCatalog
-from app.runtime.config import AgentDefinitions
+from app.runtime.config import AgentDefinitions, ModelConfig
 from app.runtime.errors import RunError
-from app.runtime.models import _model_clients
 from app.services.sessions import SessionService
 
 
@@ -54,6 +53,7 @@ class Model(ChatModelBase):
         self.calls = calls
         self.entered = entered
         self.client = SimpleNamespace(close=AsyncMock())
+        self.client.with_options = Mock(return_value=SimpleNamespace(close=AsyncMock()))
         self.inputs: list[list[Msg]] = []
         self.tools: list[dict[str, Any]] | None = []
 
@@ -213,9 +213,8 @@ def use_models(monkeypatch: pytest.MonkeyPatch, models: list[Model]) -> None:
 
     async def get_model(*args: Any, **kwargs: Any) -> Model:
         model = models.pop(0)
-        stack = _model_clients.get()
-        assert stack is not None
-        stack.push_async_callback(model.client.close)
+        record = await args[2].resolve_credential(args[0], args[1].credential_id)
+        model.credential = CredentialFactory.from_dict(record.data)
         return model
 
     monkeypatch.setattr(_chat, "get_model", get_model)
@@ -261,7 +260,8 @@ def test_tool_history_restored_and_credentials_bound(
             )
             user_id, _ = service._identity(("site", "owner"))
             credentials = await service._runtime._storage.list_credentials(user_id)
-            assert "api_key" not in str([record.data for record in credentials])
+            assert len(credentials) == 1
+            assert "credential-a" not in str([record.data for record in credentials])
             assert "bash" in str(first.tools).lower()
             assert "query_items" in str(first.tools)
             first.client.close.assert_awaited_once()
@@ -364,12 +364,15 @@ def test_owner_isolation_delete_and_disconnect(
 
 
 @pytest.mark.parametrize("provider", ["deepseek", "openai", "dashscope"])
-def test_native_model_factory_resolves_server_reference(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, provider: str
+@pytest.mark.parametrize("custom_name", [None, "custom-deployment"])
+def test_native_model_factory_uses_stored_provider_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    provider: str,
+    custom_name: str | None,
 ) -> None:
     async def scenario() -> None:
-        from agentscope.app._service import get_model
-        from agentscope.credential import CredentialFactory
+        from agentscope.app._service import _chat, get_model
         from agentscope.model import (
             DashScopeChatModel,
             DeepSeekChatModel,
@@ -377,20 +380,30 @@ def test_native_model_factory_resolves_server_reference(
         )
 
         from app.config.agents import cfg
+        from app.runtime.models import ModelClients
 
-        settings = cfg.models[cfg.agents[cfg.default].model]
-        credential = CredentialFactory.from_dict(
+        model_key = cfg.agents[cfg.default].model
+        expected_model = {
+            "deepseek": DeepSeekChatModel,
+            "openai": OpenAIChatModel,
+            "dashscope": DashScopeChatModel,
+        }[provider]
+        card = expected_model.list_models()[0]
+        settings = ModelConfig.model_validate(
             {
-                "type": f"{provider}_credential",
-                "api_key": "server-only-secret",
-                "base_url": "https://model.invalid",
+                **cfg.models[model_key].model_dump(),
+                "credential": {
+                    "type": f"{provider}_credential",
+                    "api_key": "native-provider-secret",
+                    "base_url": "https://model.invalid",
+                },
+                "model": custom_name or card.name,
+                "context_size": 12345,
+                "image_inputs": provider == "deepseek",
+                "params": {"max_tokens": 128},
             }
         )
-        monkeypatch.setattr(settings, "credential", credential)
-        monkeypatch.setattr(settings, "model", "gpt-4o")
-        monkeypatch.setattr(settings, "context_size", 12345)
-        monkeypatch.setattr(settings, "image_inputs", provider == "deepseek")
-        monkeypatch.setattr(settings, "params", {"max_tokens": 128})
+        monkeypatch.setitem(cfg.models, model_key, settings)
 
         async with service_at(tmp_path) as service:
             identifier = (await command(service, "create"))["id"]
@@ -399,30 +412,57 @@ def test_native_model_factory_resolves_server_reference(
                 user_id, agent_id, identifier
             )
             assert record is not None and record.config.chat_model_config is not None
-            async with service._runtime._app.state.model_clients.scope():
-                model = await get_model(
-                    user_id,
-                    record.config.chat_model_config,
-                    service._runtime._app.state.resource_access_service,
+            assert record.config.chat_model_config.type == f"{provider}_credential"
+            assert record.config.chat_model_config.parameters["max_tokens"] == 128
+            credentials = await service._runtime._storage.list_credentials(user_id)
+            assert len(credentials) == 1
+            assert credentials[0].data["type"] == f"{provider}_credential"
+            assert credentials[0].data["api_key"] == "native-provider-secret"
+            record.config.chat_model_config.parameters["max_tokens"] = 256
+            model = await get_model(
+                user_id,
+                record.config.chat_model_config,
+                service._runtime._app.state.resource_access_service,
+            )
+            assert isinstance(
+                model, (DeepSeekChatModel, OpenAIChatModel, DashScopeChatModel)
+            )
+            original_client = model.client
+            clients = ModelClients()
+            try:
+                assert type(model) is expected_model
+                assert model.credential.model_dump()["api_key"].get_secret_value() == (
+                    "native-provider-secret"
                 )
-                assert type(model) is credential.get_chat_model_class()
-                assert isinstance(
-                    model, (DeepSeekChatModel, OpenAIChatModel, DashScopeChatModel)
-                )
-                assert model.credential is credential
-                assert model.parameters.model_dump()["max_tokens"] == 128
+                assert model.parameters is not settings.params
+                assert model.parameters.model_dump()["max_tokens"] == 256
+                if custom_name is None:
+                    assert model.context_size == card.context_size
+                    assert model.formatter.input_types == card.input_types
+                clients.configure(model, settings)
                 assert model.context_size == 12345
+                assert model.max_retries == model.client.max_retries == 0
+                assert model.client.timeout == 30
                 assert ("image/*" in model.formatter.input_types) == (
                     provider == "deepseek"
                 )
-                assert model.client.timeout == settings.client_kwargs["timeout"]
-                assert model.max_retries == model.client.max_retries == 0
                 assert str(model.client.base_url).rstrip("/") == "https://model.invalid"
                 assert not model.client.is_closed()
-                credentials = await service._runtime._storage.list_credentials(user_id)
-                stored = str([record.data for record in credentials])
-                assert "server-only-secret" not in stored and "api_key" not in stored
-            assert model.client.is_closed()
+            finally:
+                await clients.close()
+            assert model.client.is_closed() and original_client.is_closed()
+            await service._runtime._storage.upsert_session(
+                user_id, agent_id, record.config, session_id=identifier
+            )
+            reply = Model([response("已使用会话模型配置")])
+            reply.credential = CredentialFactory.from_dict(credentials[0].data)
+            factory = AsyncMock(return_value=reply)
+            monkeypatch.setattr(_chat, "get_model", factory)
+            await run_turn(service, identifier, message="检查模型参数")
+            factory.assert_awaited_once()
+            assert factory.await_args is not None
+            assert factory.await_args.args[1].parameters["max_tokens"] == 256
+            reply.client.close.assert_awaited_once()
 
     asyncio.run(scenario())
 
@@ -788,9 +828,7 @@ def test_agent_setup_failure_closes_all_model_clients(
             raise ValueError("Agent setup failed")
 
         async with service_at(tmp_path) as service:
-            monkeypatch.setattr(
-                service._runtime._app.state.custom_agent_cls, "__init__", fail_setup
-            )
+            monkeypatch.setattr(Agent, "__init__", fail_setup)
             identifier = (await command(service, "create"))["id"]
             user_id, agent_id = service._identity(("site", "owner"))
             record = await service._runtime._storage.get_session(

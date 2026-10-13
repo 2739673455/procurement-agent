@@ -8,7 +8,7 @@ server:
   host: "" # 留空时自动检测 Docker 网桥网关。
   port: 8100 # HTTP 服务监听端口。
 
-# AgentScope 原生 SQL 存储：会话、AgentState、完整消息及模型配置引用。
+# AgentScope 原生 SQL 存储：会话、AgentState、完整消息、模型参数及提供商凭据。
 # 框架启动时创建缺失的数据表；密钥从环境变量读取，支持通过 .env 配置。
 postgresql:
   host: "127.0.0.1" # 数据库主机地址。

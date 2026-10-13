@@ -14,7 +14,6 @@ from starlette.datastructures import State
 
 from .context import ContextRegistry
 from .errors import RunError
-from .models import ModelClients
 from .teams import TeamService
 
 type RunInput = Msg | UserConfirmResultEvent | None
@@ -28,23 +27,15 @@ class RunController:
         self._storage: StorageBase = runtime.storage
         self._contexts: ContextRegistry = runtime.contexts
         self._teams = teams
-        self._model_clients: ModelClients = runtime.model_clients
         self._chat_service: ChatService = runtime.chat_service
         self._session_service: SessionService = runtime.session_service
         self._run_registry: ChatRunRegistry = runtime.chat_run_registry
-
-    async def _invoke(
-        self, user_id: str, row: SessionRecord, incoming: RunInput
-    ) -> None:
-        """保持完整运行的客户端作用域，框架负责推理与持久化。"""
-        async with self._model_clients.scope():
-            await self._chat_service.run(user_id, row.id, row.agent_id, incoming)
 
     def _spawn(
         self, user_id: str, row: SessionRecord, incoming: RunInput
     ) -> asyncio.Task[None]:
         """通过框架任务注册器启动执行，防止会话重复运行。"""
-        coroutine = self._invoke(user_id, row, incoming)
+        coroutine = self._chat_service.run(user_id, row.id, row.agent_id, incoming)
         try:
             return self._run_registry.spawn(coroutine, session_id=row.id)
         except RuntimeError:

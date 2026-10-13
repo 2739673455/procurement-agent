@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from .agents import AgentRegistry
 from .catalog import AgentCatalog
 from .context import ContextRegistry
-from .models import ChatCredential, ModelClients
+from .models import ModelClients
 from .offloading import ToolExecutionMiddleware
 from .resources import RoleMiddleware, equip_resources
 from .runs import RunController
@@ -37,13 +37,18 @@ def create_runtime(
 ) -> Runtime:
     """通过框架生命周期装配存储、工作空间、角色和运行资源。"""
     contexts = ContextRegistry(storage, context_ttl_seconds)
-    model_clients = ModelClients(catalog.definitions.models)
+    model_clients = ModelClients()
 
     class RuntimeAgent(Agent):
-        """将本实例的注入配置和工具取消收尾接入原生 Agent。"""
+        """接入模型客户端释放、注入配置和工具取消收尾。"""
 
         def __init__(self, **kwargs: Any) -> None:
-            """保留框架中间件，为后台工具补齐取消收尾。"""
+            """登记原生模型客户端，并为框架工具补齐取消收尾。"""
+            for model in (kwargs["model"], kwargs["model_config"].fallback_model):
+                if model is not None:
+                    # 初始化时将原生凭据 name 设为模型配置名，仅用于关联宿主运行设置。
+                    settings = catalog.definitions.models[model.credential.name]
+                    model_clients.configure(model, settings)
             kwargs["middlewares"] = [
                 ToolExecutionMiddleware(mw)
                 if isinstance(mw, ToolOffloadMiddleware)
@@ -56,7 +61,6 @@ def create_runtime(
         user_id: str, agent_id: str, session_id: str, workspace: WorkspaceBase
     ) -> list[MiddlewareBase]:
         """为所有框架运行装配资源、角色能力和会话目录。"""
-        model_clients.bind_task()
         _, definition = catalog.definition(user_id, agent_id)
         context = await contexts.resolve(user_id, session_id)
         await equip_resources(
@@ -86,7 +90,6 @@ def create_runtime(
         storage=storage,
         message_bus=message_bus,
         workspace_manager=workspace_manager,
-        extra_credentials=[ChatCredential],
         extra_agent_middlewares=middlewares,
         custom_agent_cls=RuntimeAgent,
         enable_scheduler=False,
@@ -103,7 +106,6 @@ def create_runtime(
             async with native_lifespan(app):
                 app.state.catalog = catalog
                 app.state.contexts = contexts
-                app.state.model_clients = model_clients
                 app.state.agents = AgentRegistry(app.state)
                 teams = TeamService(app.state)
                 app.state.teams = teams

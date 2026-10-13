@@ -143,7 +143,7 @@ async def main() -> None:
                                     "base_url": "https://model.invalid",
                                 },
                                 "model": name,
-                                "client_kwargs": {"max_retries": 0},
+                                "client_kwargs": {"timeout": 30, "max_retries": 0},
                                 "image_inputs": False,
                                 "context_size": 32768,
                                 "params": {},
@@ -248,7 +248,9 @@ async def main() -> None:
                 await state.cancel("opaque-user", row.id, {"value": f"{name}-resource"})
                 assert not (await state.messages("opaque-user", row.id))["resumable"]
                 records = await storages[name].list_credentials("opaque-user")
-                assert "secret" not in str([record.data for record in records])
+                assert len(records) == 1
+                assert records[0].data["type"] == "openai_credential"
+                assert records[0].data["api_key"] == f"{name}-secret"
                 workspace = await state.workspace_manager.get_workspace(
                     "opaque-user", row.agent_id, row.id, row.config.workspace_id
                 )

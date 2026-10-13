@@ -15,9 +15,14 @@ from agentscope.message import (
     ToolResultState,
     UserMsg,
 )
-from agentscope.model import ChatModelBase, ChatResponse, DeepSeekChatModel
+from agentscope.model import (
+    ChatModelBase,
+    ChatResponse,
+    DeepSeekChatModel,
+    OpenAIChatModel,
+)
 from openai import AsyncOpenAI
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.config.agents import cfg
 from app.runtime.config import AgentDefinitions, ModelConfig
@@ -39,9 +44,9 @@ def make_model() -> ModelFactory:
                 },
                 "model": "test",
                 "client_kwargs": {"timeout": 30, "max_retries": 0},
-                "params": params or {},
                 "image_inputs": True,
                 "context_size": 32768,
+                "params": params or {},
             }
         )
         model_cls = cast(
@@ -52,7 +57,9 @@ def make_model() -> ModelFactory:
             model_cls(
                 credential=cast(DeepSeekCredential, settings.credential),
                 model=settings.model,
-                parameters=model_cls.Parameters(**settings.params),
+                parameters=cast(DeepSeekChatModel.Parameters, settings.params),
+                context_size=settings.context_size,
+                max_retries=0,
                 client_kwargs=settings.client_kwargs,
             ),
         )
@@ -61,10 +68,42 @@ def make_model() -> ModelFactory:
 
 
 @pytest.mark.parametrize(
+    ("provider", "parameters_type"),
+    [
+        ("deepseek_credential", DeepSeekChatModel.Parameters),
+        ("openai_credential", OpenAIChatModel.Parameters),
+    ],
+)
+def test_model_configuration_preserves_native_parameters(
+    provider: str, parameters_type: type[BaseModel]
+) -> None:
+    """配置加载后持有提供商参数对象，序列化与重新加载保留参数字段。"""
+    settings = ModelConfig.model_validate(
+        {
+            "credential": {"type": provider, "api_key": "test"},
+            "model": "test",
+            "client_kwargs": {},
+            "image_inputs": False,
+            "context_size": 32768,
+            "params": {"max_tokens": 4096, "thinking_enable": True},
+        }
+    )
+    assert isinstance(settings.params, parameters_type)
+    serialized = settings.model_dump()
+    assert serialized["params"]["max_tokens"] == 4096
+    assert serialized["params"]["thinking_enable"] is True
+    restored = ModelConfig.model_validate(serialized)
+    assert isinstance(restored.params, parameters_type)
+    assert restored.params == settings.params
+
+
+@pytest.mark.parametrize(
     "overrides",
     [
         {"credential": {"type": "unknown_credential", "api_key": "test"}},
+        {"model": ""},
         {"context_size": None},
+        {"context_size": 0},
         {"params": {"max_tokens": -1}},
         {"params": {"reasoning_effort": "low"}},
     ],
@@ -74,12 +113,13 @@ def test_invalid_provider_configuration_rejected(overrides: dict[str, Any]) -> N
         "credential": {"type": "deepseek_credential", "api_key": "test"},
         "model": "test",
         "client_kwargs": {},
-        "params": {},
         "image_inputs": False,
         "context_size": 32768,
+        "params": {},
     }
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError) as caught:
         ModelConfig.model_validate({**config, **overrides})
+    assert caught.value.error_count() == 1
 
 
 @pytest.mark.parametrize("reference", [None, "missing-model"])

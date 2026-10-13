@@ -1,4 +1,4 @@
-# 可用模型的连接参数和能力配置，由各 Agent 的 model 引用。
+# 初始化原生凭据和模型参数，由各 Agent 的 model 引用。
 models:
   # DeepSeek 官方接口的模型配置。
   deepseek-deepseek-flash:
@@ -7,11 +7,11 @@ models:
       base_url: https://api.deepseek.com # 模型接口地址。
       api_key: ${oc.env:DEEPSEEK_API_KEY} # 从环境变量读取模型密钥。
     model: deepseek-flash # 服务商提供的模型标识。
-    client_kwargs: # 请求客户端参数。
+    client_kwargs: # 提供商 SDK 的连接选项。
       timeout: 30 # 请求超时，单位为秒。
-      max_retries: 0 # 请求重试次数。
-    image_inputs: true # 是否支持图片输入。
-    context_size: 1048576 # AgentScope 上下文 token 预算，须显式指定正整数。
+      max_retries: 0 # SDK 重试次数；模型层不额外重试。
+    image_inputs: true # 是否允许向模型发送图片附件。
+    context_size: 1048576 # 显式上下文 token 预算，覆盖原生模型卡和默认值。
     params: {} # 原生模型 Parameters 字段，例如 thinking_enable、reasoning_effort、max_tokens。
 
 # 默认对话入口及预定义角色，能力引用由服务启动时验证。

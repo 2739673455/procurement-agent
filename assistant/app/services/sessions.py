@@ -156,9 +156,12 @@ class SessionService:
                 raise AgentError("消息不能为空。")
             _, definition = self._catalog.definition(user_id, row.agent_id)
             files = await self._attachments.load(user_id, row, attachments)
-            model = self._catalog.definitions.models[definition.model]
+            settings = self._catalog.definitions.models[definition.model]
             incoming = user_message(
-                message.strip(), page_context, files, image_inputs=model.image_inputs
+                message.strip(),
+                page_context,
+                files,
+                image_inputs=settings.image_inputs,
             )
             return await self._runtime.send(user_id, row.id, incoming, {"erpnext": erp})
 

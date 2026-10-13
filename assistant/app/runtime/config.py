@@ -4,31 +4,30 @@ from typing import Any, Self
 
 from agentscope.agent import ContextConfig, ReActConfig
 from agentscope.credential import CredentialBase, CredentialFactory
-from pydantic import BaseModel, Field, SerializeAsAny, field_validator, model_validator
+from pydantic import BaseModel, Field, SerializeAsAny, model_validator
 
 
 class ModelConfig(BaseModel):
-    """单个模型的服务商、连接参数和能力声明。"""
+    """原生凭据、生成参数，以及宿主显式指定的模型运行设置。"""
 
     credential: SerializeAsAny[CredentialBase]  # 原生凭据；type 决定模型类和消息格式。
     model: str = Field(min_length=1)  # 服务商的模型标识，不可为空。
-    client_kwargs: dict[str, Any]  # 传给提供商 SDK 的连接选项，例如 timeout。
+    client_kwargs: dict[str, Any]  # 通过 SDK 的 with_options 设置连接选项。
     image_inputs: bool  # 是否允许向模型发送图片附件。
-    context_size: int = Field(gt=0)  # 显式指定正整数上下文 token 预算。
-    params: dict[str, Any]  # 提供商原生 Parameters 字段，无附加参数时填写 {}。
+    context_size: int = Field(gt=0)  # 显式上下文预算，覆盖模型卡或构造器默认值。
+    params: SerializeAsAny[BaseModel]  # 加载时解析为对应模型的原生 Parameters 对象。
 
-    @field_validator("credential", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def _parse_credential(cls, value: dict[str, Any]) -> CredentialBase:
-        """由框架凭据工厂解析提供商配置字典，并保护密钥字段。"""
-        return CredentialFactory.from_dict(value)
-
-    @model_validator(mode="after")
-    def _validate_parameters(self) -> Self:
-        """启动时按原生模型参数类型校验。"""
-        model_cls = self.credential.get_chat_model_class()
-        model_cls.Parameters.model_validate(self.params)
-        return self
+    def _parse_model(cls, value: dict[str, Any]) -> dict[str, Any]:
+        """先解析原生凭据，再按凭据指定的模型类型解析参数。"""
+        credential = CredentialFactory.from_dict(value.get("credential", {}))
+        model_cls = credential.get_chat_model_class()
+        return {
+            **value,
+            "credential": credential,
+            "params": model_cls.Parameters.model_validate(value.get("params")),
+        }
 
 
 class AgentDefinition(BaseModel):
