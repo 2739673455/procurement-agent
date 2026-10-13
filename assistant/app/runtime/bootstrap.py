@@ -21,6 +21,7 @@ from .models import ChatCredential, ModelClients
 from .offloading import ToolExecutionMiddleware
 from .resources import RoleMiddleware, RunControlMiddleware, equip_resources
 from .runs import RunController
+from .runtime import Runtime
 from .teams import TeamService
 from .workspaces import session_directory_middlewares
 
@@ -33,7 +34,7 @@ def create_runtime(
     catalog: AgentCatalog,
     injection_config: InjectionConfig,
     context_ttl_seconds: float,
-) -> FastAPI:
+) -> Runtime:
     """通过框架生命周期装配存储、工作空间、角色和运行资源。"""
     contexts = ContextRegistry(storage, context_ttl_seconds)
     model_clients = ModelClients(catalog.definitions.models)
@@ -121,4 +122,4 @@ def create_runtime(
             contexts.clear()
 
     runtime.router.lifespan_context = lifespan
-    return runtime
+    return Runtime(runtime, catalog, workspace_manager)

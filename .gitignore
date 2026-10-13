@@ -9,4 +9,5 @@ node_modules/
 
 assistant/logs/
 assistant/data/workspaces/
+assistant/data/standalone/
 frappe_app/public/dist/

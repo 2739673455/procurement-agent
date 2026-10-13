@@ -150,7 +150,7 @@ servers:
 
 恢复采用保存上下文后继续推理的语义，不恢复任意 Python 指令位置，也不重新运行已经完成的成员 Agent。框架负责工具调用与结果配对、权限等待、后台任务、原生 Agent 间通信、事件发布和 SQL 持久化。
 
-应用将运行意图保存在框架 `AgentState.middle_context` 的 `app.run_control` 中，取值为 `active`、`interrupted` 或 `cancelled`。这项状态用于阻止停止后的 Agent 团队消息自动唤醒模型，团队提示保留为原生上下文供恢复使用；没有额外的运行表或自定义聊天事件格式。
+应用将运行意图保存在框架 `AgentState.middle_context` 的 `runtime.run_control` 中，取值为 `active`、`interrupted` 或 `cancelled`。这项状态用于阻止停止后的 Agent 团队消息自动唤醒模型，团队提示保留为原生上下文供恢复使用；没有额外的运行表或自定义聊天事件格式。
 
 发送、恢复和确认都经过 ERPNext 身份核验。成员 Agent 通过原生团队归属读取负责人 Agent 会话绑定的客户端，沿用发起任务的用户身份访问 ERPNext；`runtime.context_ttl_seconds` 限制登录上下文使用时长，失效或服务重启后须由认证请求重新绑定。模型客户端在请求触发及框架独立唤醒任务结束后释放，应用关闭时等待清理完成。多进程消息总线及跨进程认证上下文提供器不在当前单 worker 实现范围内。
 
@@ -200,3 +200,22 @@ uv run --directory assistant python main.py
 ```
 
 Frappe 通过 Compose 中的 `BUYING_AI_AGENT_URL` 访问宿主机 Assistant。Assistant 默认端口为 `8100`，通过配置的 ERPNext 地址核实用户并查询业务数据。真实模型能力需要配置后联调；助手服务不可用不影响 ERPNext 本身使用。
+
+
+## 通用 Runtime 公共 API
+
+`assistant/app/runtime` 提供类型化的 `Runtime`。`create_runtime(...)` 返回可用
+`async with` 管理的实例，统一会话创建、归属校验、历史/状态、事件订阅和运行控制。
+采购宿主只负责 ERP 认证、身份映射、页面与附件输入适配；消费者不需要访问 FastAPI `app.state`。
+
+无 ERP 的完整用法、能力配置和生命周期边界见 [独立示例](assistant/examples/README.md)。
+本地检查：
+
+```bash
+uv run --directory assistant ruff check .
+uv run --directory assistant ruff format --check .
+uv run --directory assistant pyright
+uv run --directory assistant python -m pytest -q
+# Docker 可用时运行真实沙箱测试
+RUN_DOCKER_TESTS=1 uv run --directory assistant python -m pytest -q tests/test_workspaces.py
+```

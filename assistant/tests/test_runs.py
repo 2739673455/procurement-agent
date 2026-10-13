@@ -112,8 +112,8 @@ async def service_at(path: Path) -> AsyncGenerator[SessionService]:
             str(path / "workspaces"), isolation=IsolationPolicy.PER_USER
         ),
     )
-    async with app.router.lifespan_context(app):
-        yield SessionService(app.state)
+    async with app:
+        yield SessionService(app)
 
 
 async def command(
@@ -146,7 +146,7 @@ async def watch(
     assert response.media_type == "text/event-stream"
     assert response.headers["X-Accel-Buffering"] == "no"
     ready = asyncio.Event()
-    bus = service._runtime.message_bus
+    bus = service._runtime._app.state.message_bus
     subscribe = bus.subscribe
 
     def mark_ready(key: str, **kwargs: Any) -> AsyncGenerator[dict[str, Any]]:
@@ -190,7 +190,7 @@ async def run_turn(
     async with watch(service, identifier, owner=owner) as events:
         result = await command(service, "send", identifier, owner=owner, **kwargs)
         assert result.model_dump() == {"status": "started", "session_id": identifier}
-        task = service._runtime.chat_run_registry.get(identifier)
+        task = service._runtime._app.state.chat_run_registry.get(identifier)
         assert task is not None
         await asyncio.wait_for(task, 10)
     return events
@@ -248,7 +248,7 @@ def test_tool_history_restored_and_credentials_bound(
                 isinstance(block, ToolResultBlock) for block in history[-1].content
             )
             user_id, _ = service._identity(("site", "owner"))
-            credentials = await service._storage.list_credentials(user_id)
+            credentials = await service._runtime._storage.list_credentials(user_id)
             assert "api_key" not in str([record.data for record in credentials])
             assert "bash" in str(first.tools).lower()
             assert "query_items" in str(first.tools)
@@ -288,7 +288,7 @@ def test_cancel_then_new_turn_and_double_send(
                 assert not (await command(service, "messages", identifier))["running"]
                 model.client.close.assert_awaited_once()
                 await command(service, "send", identifier, message="新问题")
-                task = service._runtime.chat_run_registry.get(identifier)
+                task = service._runtime._app.state.chat_run_registry.get(identifier)
                 assert task is not None
                 await asyncio.wait_for(task, 10)
             ends = [e for e in events if e["type"] == "REPLY_END"]
@@ -313,7 +313,7 @@ def test_owner_isolation_delete_and_disconnect(
                 "subscribe",
                 "rename",
             ]:
-                with pytest.raises(AgentError) as denied:
+                with pytest.raises(RunError) as denied:
                     await command(
                         service,
                         action,
@@ -321,11 +321,11 @@ def test_owner_isolation_delete_and_disconnect(
                         owner=("site", "other"),
                         message="no",
                     )
-                assert denied.value.status == 404
+                assert denied.value.code == "not_found"
             async with watch(service, identifier):
                 await command(service, "send", identifier, message="问题")
                 await asyncio.wait_for(entered.wait(), 5)
-            task = service._runtime.chat_run_registry.get(identifier)
+            task = service._runtime._app.state.chat_run_registry.get(identifier)
             assert task is not None and not task.done()
             async with watch(service, identifier) as events:
                 await command(service, "delete", identifier)
@@ -336,10 +336,14 @@ def test_owner_isolation_delete_and_disconnect(
             assert (await command(service, "list"))["sessions"] == []
             user_id, agent_id = service._identity(("site", "owner"))
             assert (
-                await service._storage.get_session(user_id, agent_id, identifier)
+                await service._runtime._storage.get_session(
+                    user_id, agent_id, identifier
+                )
                 is None
             )
-            assert await service._storage.list_messages(user_id, identifier) == (
+            assert await service._runtime._storage.list_messages(
+                user_id, identifier
+            ) == (
                 [],
                 False,
             )
@@ -379,13 +383,15 @@ def test_native_model_factory_resolves_server_reference(
         async with service_at(tmp_path) as service:
             identifier = (await command(service, "create"))["id"]
             user_id, agent_id = service._identity(("site", "owner"))
-            record = await service._storage.get_session(user_id, agent_id, identifier)
+            record = await service._runtime._storage.get_session(
+                user_id, agent_id, identifier
+            )
             assert record is not None and record.config.chat_model_config is not None
-            async with service._runtime.model_clients.scope():
+            async with service._runtime._app.state.model_clients.scope():
                 model = await get_model(
                     user_id,
                     record.config.chat_model_config,
-                    service._runtime.resource_access_service,
+                    service._runtime._app.state.resource_access_service,
                 )
                 assert type(model) is credential.get_chat_model_class()
                 assert isinstance(
@@ -401,7 +407,7 @@ def test_native_model_factory_resolves_server_reference(
                 assert model.max_retries == model.client.max_retries == 0
                 assert str(model.client.base_url).rstrip("/") == "https://model.invalid"
                 assert not model.client.is_closed()
-                credentials = await service._storage.list_credentials(user_id)
+                credentials = await service._runtime._storage.list_credentials(user_id)
                 stored = str([record.data for record in credentials])
                 assert "server-only-secret" not in stored and "api_key" not in stored
             assert model.client.is_closed()
@@ -437,7 +443,7 @@ def test_concurrent_users_get_separate_erp_clients(
                 watch(service, b, owner=("site", "other")) as second,
             ):
                 await command(service, "send", a, message="query", erp="client-A")
-                first_task = service._runtime.chat_run_registry.get(a)
+                first_task = service._runtime._app.state.chat_run_registry.get(a)
                 await command(
                     service,
                     "send",
@@ -446,7 +452,10 @@ def test_concurrent_users_get_separate_erp_clients(
                     owner=("site", "other"),
                     erp="client-B",
                 )
-                tasks = [first_task, service._runtime.chat_run_registry.get(b)]
+                tasks = [
+                    first_task,
+                    service._runtime._app.state.chat_run_registry.get(b),
+                ]
                 assert all(task is not None for task in tasks)
                 await asyncio.wait_for(asyncio.gather(*tasks), 10)
             results = [first, second]
@@ -514,7 +523,9 @@ def test_stop_during_tools_preserves_result_pairs(
                 for e in events
             ), events
             user_id, agent_id = service._identity(("site", "owner"))
-            record = await service._storage.get_session(user_id, agent_id, identifier)
+            record = await service._runtime._storage.get_session(
+                user_id, agent_id, identifier
+            )
             assert record is not None
             blocks = [block for msg in record.state.context for block in msg.content]
             assert (
@@ -639,7 +650,7 @@ def test_background_tool_state_delivery_and_stop(
                 )
             else:
                 if action == "tool_stop":
-                    tools = await service._runtime.background_task_manager.list_tools(
+                    tools = await service._runtime._app.state.background_task_manager.list_tools(
                         identifier
                     )
                     await cast(ToolStop, tools[0])(
@@ -665,7 +676,7 @@ def test_background_tool_state_delivery_and_stop(
                 if action == "interrupt":
                     assert history["resumable"]
                     await command(service, "resume", identifier)
-                    task = service._runtime.chat_run_registry.get(identifier)
+                    task = service._runtime._app.state.chat_run_registry.get(identifier)
                     assert task is not None
                     await asyncio.wait_for(task, 5)
                 else:
@@ -686,7 +697,7 @@ def test_late_subscription_reports_persisted_failure(
         async with service_at(tmp_path) as service:
             identifier = (await command(service, "create"))["id"]
             await command(service, "send", identifier, message="失败")
-            task = service._runtime.chat_run_registry.get(identifier)
+            task = service._runtime._app.state.chat_run_registry.get(identifier)
             assert task is not None
             await task
             async with watch(service, identifier) as events:
@@ -715,7 +726,7 @@ def test_queued_reply_keeps_model_client_open(
             async def enqueue_hint(*args: Any, **kwargs: Any) -> ChatResponse:
                 """在首条回复生成过程中投递消息，触发框架继续当前运行。"""
                 if not model.inputs:
-                    await service._runtime.message_bus.queue_push(
+                    await service._runtime._app.state.message_bus.queue_push(
                         MessageBusKeys.inbox(identifier),
                         HintBlock(source="test", hint="请补充说明").model_dump(
                             mode="json"
@@ -753,14 +764,16 @@ def test_agent_setup_failure_closes_all_model_clients(
 
         async with service_at(tmp_path) as service:
             monkeypatch.setattr(
-                service._runtime.custom_agent_cls, "__init__", fail_setup
+                service._runtime._app.state.custom_agent_cls, "__init__", fail_setup
             )
             identifier = (await command(service, "create"))["id"]
             user_id, agent_id = service._identity(("site", "owner"))
-            record = await service._storage.get_session(user_id, agent_id, identifier)
+            record = await service._runtime._storage.get_session(
+                user_id, agent_id, identifier
+            )
             assert record is not None
             record.config.fallback_chat_model_config = record.config.chat_model_config
-            await service._storage.upsert_session(
+            await service._runtime._storage.upsert_session(
                 user_id, agent_id, record.config, session_id=identifier
             )
             await run_turn(service, identifier, message="问题")
@@ -809,7 +822,7 @@ def test_upload_workspace_ownership_and_cleanup(tmp_path: Path) -> None:
             independent = await command(service, "upload", second, upload=data)
             assert independent["path"] != uploaded["path"]
             assert Path(independent["path"]).read_text() == "型号,数量\nA,3"
-            with pytest.raises(AgentError):
+            with pytest.raises(RunError):
                 await command(
                     service, "upload", first, owner=("site", "intruder"), upload=data
                 )
