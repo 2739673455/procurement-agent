@@ -6,26 +6,22 @@
 
 | 目录             | 职责                                                                                           |
 | ---------------- | ---------------------------------------------------------------------------------------------- |
+| `frappe_docker/` | 官方 Docker 仓库子模块，提供 Frappe / ERPNext 开发环境基础。                                   |
 | `frappe_app/`    | Frappe App，内部名称为 `buying_ai`。提供助手界面、ERPNext 登录身份衔接、页面上下文和请求转发。 |
 | `assistant/`     | 独立的 Agent 服务，运行在宿主机。负责身份核实、会话管理、模型与工具调用。                      |
-| `frappe_docker/` | 官方 Docker 仓库子模块，提供 Frappe / ERPNext 开发环境基础。                                   |
 
 ## 技术架构
 
-| 层次       | 技术与职责                                                                        |
-| ---------- | --------------------------------------------------------------------------------- |
-| 前端       | React + TypeScript，源码位于 `frappe_app/public/frontend/`，由 Bench 构建和监听。 |
-| Assistant  | FastAPI，负责 ERPNext 身份核验、业务工具和输入处理。                              |
-| Agent 运行 | AgentScope 2，负责推理、工具调用、Agent 间通信和运行资源管理。                        |
-| 持久化     | AgentScope `AsyncSQLAlchemyStorage` 将会话、消息和状态保存到 PostgreSQL。         |
-| 事件分发   | 原生 SSE 与 `InMemoryMessageBus`，Assistant 使用单 worker。                       |
-| 执行环境   | `DockerWorkspaceManager` 按用户管理 Docker 容器。                                 |
+| 层次      | 技术与职责                                                                        |
+| --------- | --------------------------------------------------------------------------------- |
+| 前端      | React + TypeScript，源码位于 `frappe_app/public/frontend/`，由 Bench 构建和监听。 |
+| Assistant | FastAPI，负责 ERPNext 身份核验、业务工具和输入处理。                              |
 
 ### 消息与模型
 
 - 聊天历史和发送响应使用 AgentScope 原生 `Msg`、`ChatTriggerResponse`。
-- 前端使用官方 TypeScript SDK 的 `appendEvent()` 累积消息；每个选中会话保持一条 SSE 订阅。
-- 关闭页面只结束订阅，后台任务继续执行。服务重启后可手动恢复已保存的上下文。
+- 前端使用 AgentScope 官方 TypeScript SDK（`@agentscope-ai/agentscope`）的 `appendEvent()` 累积消息；每个选中会话保持一条 SSE 订阅。
+- 关闭页面只结束订阅，后台任务继续执行。服务重启后，符合恢复条件的会话可点击「继续执行」，从已保存的上下文继续推理。
 - 模型由 AgentScope 原生凭据工厂选择，连接参数在 `assistant/conf/agents.yaml` 的 `models` 中配置。DeepSeek 和 OpenAI 使用 Chat Completions。
 - 模型密钥从环境变量或 `assistant/conf/.env` 读取；数据库仅保存模型配置引用。
 - ERPNext 客户端按认证用户绑定，登录凭据只保留在服务端内存。
@@ -51,7 +47,7 @@
 
 Bash 的相对路径以会话目录为起点；Read、Write、Edit 使用绝对路径，当前会话目录由提示词提供。Glob、Grep 默认搜索当前会话目录。
 
-工具执行超过 10 秒时，框架将其转入后台，结果返回后自动继续推理。后台工具计入任务运行状态；中断或取消会停止工具并等待收尾。工具大结果由框架卸载到工作目录。
+工具执行超过 10 秒时，框架将其转入后台，结果返回后自动继续推理。界面分别展示当前回复、成员 Agent 和后台工具状态；中断保留后台工具，取消会请求停止当前会话的回复及后台工具，后台工具的清理由框架异步完成。工具大结果由框架卸载到工作目录。
 
 恢复运行会加载保存的上下文；服务重启后，未完成的后台工具不会自动恢复执行。
 
@@ -97,9 +93,9 @@ assistant/
 
 调用方通过 `AgentCatalog` 提供 `AgentDefinitions`、原生 MCP 客户端映射、提示词基目录和 Skill 根目录，再向 `create_runtime()` 传入原生存储、消息总线、工作空间管理器、`InjectionConfig` 和上下文有效期。配置可以来自 YAML、代码或其他来源。
 
-进入返回应用的生命周期后，`state.agents` 登记 Agent，`state.runs` 控制运行，`state.teams` 读取团队状态。用户标识使用调用方提供的字符串，工具通过 `RunContext.clients` 获取外部客户端。运行错误以 `RunError.code` 表达，由应用转换成 HTTP 响应。
+`create_runtime()` 返回 `Runtime`，通过 `async with runtime` 管理生命周期，公共方法提供会话管理、运行控制和状态读取。用户标识使用调用方提供的字符串；发送、恢复、确认、中断、取消及删除须显式传入 `clients`，没有业务客户端时传入 `{}`。工具通过 `RunContext.clients` 获取外部客户端。运行错误以 `RunError.code` 表达，由应用转换成 HTTP 响应。
 
-推理循环、模型提供商选择、消息和状态存储、后台工具执行、团队邀请与通信、事件流、容器生命周期均使用框架实现。运行模块补充能力分配、会话工作目录、团队整体中断与恢复、客户端释放，以及工具取消收尾。
+推理循环、模型提供商选择、消息和状态存储、后台工具执行、团队邀请与通信、事件流、容器生命周期均使用框架实现。运行模块补充能力分配、会话工作目录、认证客户端绑定、模型客户端释放，以及前台工具取消收尾。
 
 `agents.yaml` 在顶层 `models` 定义可用模型，每个 Agent 的 `model` 必须引用其中一个配置名。各角色声明名称、说明、提示词文件、工作空间工具、业务工具工厂、MCP 服务、Skill、可邀请的协作 Agent 和运行策略。`context` 与 `react` 直接使用 AgentScope 的 `ContextConfig` 和 `ReActConfig`。启动时校验全部能力引用及 Skill 元数据，所有应用配置须显式提供。
 
@@ -135,22 +131,22 @@ servers:
 
 ## 任务运行语义
 
-| action                       | 行为                                                                   |
-| ---------------------------- | ---------------------------------------------------------------------- |
-| `create`                     | 使用配置中的默认入口角色创建会话。                                     |
-| `send`                       | 用新用户输入开始运行，并重新绑定认证客户端。                           |
-| `interrupt`                  | 中断负责人 Agent 及当前成员 Agent，等待框架保存上下文。               |
-| `resume`                     | 读取已保存上下文，通过原生空输入继续推理，不补发用户消息。             |
-| `cancel`                     | 结束当前任务并解散 Agent 团队，保留负责人 Agent 对话历史；继续使用会话须发送新消息。 |
-| `confirm`                    | 提交原生 `UserConfirmResultEvent`，恢复对应 Agent 的工具调用。          |
-| `messages`                   | 读取原生消息、Agent 团队状态、待确认调用及可恢复条件。                  |
-| `upload`                     | 将文件写入当前会话工作空间，返回文件名和路径。                         |
-| `subscribe`                  | 订阅原生 SSE 事件长连接。                                              |
-| `list` / `rename` / `delete` | 管理用户会话；删除同时停止整个任务并清理其数据。                       |
+| action                       | 行为                                                                                 |
+| ---------------------------- | ------------------------------------------------------------------------------------ |
+| `create`                     | 使用配置中的默认入口角色创建会话。                                                   |
+| `send`                       | 用新用户输入开始运行，并重新绑定认证客户端。                                         |
+| `interrupt`                  | 请求中断当前会话的回复，或结束其工具确认／外部结果等待；保留后台工具和成员 Agent。 |
+| `resume`                     | 读取当前会话的已保存上下文，通过原生空输入继续推理，不补发用户消息。               |
+| `cancel`                     | 请求取消当前会话的回复及后台工具，保留上下文和团队；回复被中断后仍可继续执行。     |
+| `confirm`                    | 提交原生 `UserConfirmResultEvent`，恢复对应 Agent 的工具调用。                       |
+| `messages`                   | 读取原生消息、Agent 团队状态、待确认调用及可恢复条件。                               |
+| `upload`                     | 将文件写入当前会话工作空间，返回文件名和路径。                                       |
+| `subscribe`                  | 订阅原生 SSE 事件长连接。                                                            |
+| `list` / `rename` / `delete` | 管理用户会话；删除同时停止整个任务并清理其数据。                                     |
 
-恢复采用保存上下文后继续推理的语义，不恢复任意 Python 指令位置，也不重新运行已经完成的成员 Agent。框架负责工具调用与结果配对、权限等待、后台任务、原生 Agent 间通信、事件发布和 SQL 持久化。
+恢复采用保存上下文后继续当前会话推理的语义，不恢复任意 Python 指令位置，也不主动重启成员 Agent。界面的「继续执行」根据原生会话状态、已保存上下文和最近回复的结束原因显示。框架负责工具调用与结果配对、权限等待、后台任务、原生 Agent 间通信、事件发布和 SQL 持久化。
 
-应用将运行意图保存在框架 `AgentState.middle_context` 的 `runtime.run_control` 中，取值为 `active`、`interrupted` 或 `cancelled`。这项状态用于阻止停止后的 Agent 团队消息自动唤醒模型，团队提示保留为原生上下文供恢复使用；没有额外的运行表或自定义聊天事件格式。
+中断和取消遵循 AgentScope 原生会话语义，不增加持久化运行意图。团队消息和后台结果仍可按框架机制唤醒会话；中断或取消当前会话不会冻结整个团队。取消也不会结束工具确认等待，需要处理确认或点击「中断当前回复」。删除会话时，由框架停止并清理会话及其团队资源。
 
 发送、恢复和确认都经过 ERPNext 身份核验。成员 Agent 通过原生团队归属读取负责人 Agent 会话绑定的客户端，沿用发起任务的用户身份访问 ERPNext；`runtime.context_ttl_seconds` 限制登录上下文使用时长，失效或服务重启后须由认证请求重新绑定。模型客户端在请求触发及框架独立唤醒任务结束后释放，应用关闭时等待清理完成。多进程消息总线及跨进程认证上下文提供器不在当前单 worker 实现范围内。
 
@@ -200,22 +196,3 @@ uv run --directory assistant python main.py
 ```
 
 Frappe 通过 Compose 中的 `BUYING_AI_AGENT_URL` 访问宿主机 Assistant。Assistant 默认端口为 `8100`，通过配置的 ERPNext 地址核实用户并查询业务数据。真实模型能力需要配置后联调；助手服务不可用不影响 ERPNext 本身使用。
-
-
-## 通用 Runtime 公共 API
-
-`assistant/app/runtime` 提供类型化的 `Runtime`。`create_runtime(...)` 返回可用
-`async with` 管理的实例，统一会话创建、归属校验、历史/状态、事件订阅和运行控制。
-采购宿主只负责 ERP 认证、身份映射、页面与附件输入适配；消费者不需要访问 FastAPI `app.state`。
-
-无 ERP 的完整用法、能力配置和生命周期边界见 [独立示例](assistant/examples/README.md)。
-本地检查：
-
-```bash
-uv run --directory assistant ruff check .
-uv run --directory assistant ruff format --check .
-uv run --directory assistant pyright
-uv run --directory assistant python -m pytest -q
-# Docker 可用时运行真实沙箱测试
-RUN_DOCKER_TESTS=1 uv run --directory assistant python -m pytest -q tests/test_workspaces.py
-```

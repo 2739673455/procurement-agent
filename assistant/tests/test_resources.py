@@ -61,11 +61,9 @@ def test_mcp_reuse_reconfigure_and_restore(tmp_path: Path) -> None:
             await equip_resources(catalog, workspace, "agent", "first", definition)
             restored = await workspace.list_mcps(agent_id="agent", session_id="first")
             assert len(restored) == 1 and restored[0].execution_timeout == 12
-            # 收尾按框架记录清除连接，包括角色已不再引用的服务。
+            # 按角色声明清除已不再引用的服务。
             definition.mcps = []
-            await equip_resources(
-                catalog, workspace, "agent", "first", definition, active=False
-            )
+            await equip_resources(catalog, workspace, "agent", "first", definition)
             assert await workspace.list_mcps(agent_id="agent", session_id="first") == []
             assert (
                 len(await workspace.list_mcps(agent_id="agent", session_id="second"))

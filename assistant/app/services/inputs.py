@@ -27,7 +27,7 @@ def user_message(
     if metadata:
         blocks.append(
             TextBlock(
-                text="用户附件已保存到工作空间以下路径，请按需通过工具读取：\n"
+                text="用户附件已保存到工作空间以下路径，请通过工具按需读取：\n"
                 + json.dumps(metadata, ensure_ascii=False)
             )
         )
@@ -44,7 +44,7 @@ def user_message(
         elif "data" in item:
             blocks.append(
                 TextBlock(
-                    text=f"当前模型不支持图片输入，附件 {item['name']} 仅保存为文件，不能据此声称已看见图片内容。"
+                    text=f"当前模型不支持图片输入，附件 {item['name']} 保存为文件，不能据此声称已看见图片内容。"
                 )
             )
     return UserMsg(

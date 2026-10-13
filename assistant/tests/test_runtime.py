@@ -23,10 +23,10 @@ from test_runs import (
     run_turn,
     service_at,
     use_models,
+    wait_for_idle,
     watch,
 )
 
-from app.runtime.context import CONTROL_KEY
 from app.runtime.errors import RunError
 from app.tools import items as item_tools
 
@@ -47,10 +47,11 @@ async def eventually(check: Callable[[], Awaitable[bool]]) -> None:
             await asyncio.sleep(0.02)
 
 
+@pytest.mark.parametrize("action", ["interrupt", "cancel"])
 def test_interrupt_restart_resume_and_cancel(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, action: str
 ) -> None:
-    """重启后恢复已保存上下文，取消保留历史并禁止无新输入恢复。"""
+    """中断和取消均保留上下文，重启后可按原生回复结束原因继续推理。"""
 
     async def scenario() -> None:
         entered = asyncio.Event()
@@ -61,7 +62,10 @@ def test_interrupt_restart_resume_and_cancel(
             identifier = (await command(service, "create"))["id"]
             await command(service, "send", identifier, message="分析物料")
             await asyncio.wait_for(entered.wait(), 5)
-            await command(service, "interrupt", identifier)
+            await command(service, action, identifier)
+            await wait_for_idle(
+                service._runtime, service._identity(("site", "owner"))[0], identifier
+            )
             state = await command(service, "messages", identifier)
             assert state["resumable"] and not state["running"]
             first.client.close.assert_awaited_once()
@@ -128,12 +132,23 @@ def test_native_permission_confirmation_and_parked_interrupt(
                 reply_id=request.reply_id,
                 confirm_results=[ConfirmResult(confirmed=True, tool_call=forged)],
             )
+            # 原生取消不会关闭停放的权限请求；确认仍然可以继续原回复。
+            await command(service, "cancel", identifier)
+            assert (await command(service, "messages", identifier))[
+                "status"
+            ] == SessionStatus.AWAITING_PERMISSION
             await command(service, "confirm", identifier, confirmation=result)
             await service._runtime._app.state.chat_run_registry.get(identifier)
             assert called == [[["item_code", "like", "%bolt%"]]]
             await run_turn(service, identifier, message="再查询")
             assert (await command(service, "messages", identifier))["confirmations"]
             await command(service, "interrupt", identifier)
+
+            async def interrupted() -> bool:
+                snapshot = await command(service, "messages", identifier)
+                return snapshot["resumable"] and not snapshot["confirmations"]
+
+            await eventually(interrupted)
             state = await command(service, "messages", identifier)
             assert state["resumable"] and not state["confirmations"]
             with pytest.raises(RunError):
@@ -143,10 +158,11 @@ def test_native_permission_confirmation_and_parked_interrupt(
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("action", ["interrupt", "cancel"])
 def test_native_team_context_controls_and_cleanup(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, action: str
 ) -> None:
-    """成员 Agent 使用负责人 Agent 绑定的用户身份；团队中断、恢复及取消不会串用户。"""
+    """控制负责人回复不会停止成员；成员结果仍会原生唤醒负责人，身份不串用户。"""
 
     async def scenario() -> None:
         from agentscope.app._service import _chat
@@ -162,6 +178,7 @@ def test_native_team_context_controls_and_cleanup(
 
         monkeypatch.setattr(items.items, "query_items", query)
         member_entered = asyncio.Event()
+        leader_entered = asyncio.Event()
         release_member = asyncio.Event()
         models = []
         leader_count = 0
@@ -207,15 +224,18 @@ def test_native_team_context_controls_and_cleanup(
                             },
                             "invite",
                         )
+                    if leader_count == 3:
+                        leader_entered.set()
+                        await asyncio.Event().wait()
                     return response("负责人完成")
                 assert "query_items" in names and "TeamCreate" not in names
                 member_count += 1
                 if member_count == 1:
                     member_entered.set()
                     await release_member.wait()
-                if member_count <= 2:
+                if member_count == 1:
                     return response(tool=True)
-                if member_count == 3:
+                if member_count == 2:
                     return tool_response(
                         "TeamSay",
                         {"content": "物料查询完成", "to": "采购助手"},
@@ -238,29 +258,19 @@ def test_native_team_context_controls_and_cleanup(
                 service, "send", identifier, message="组织查询", erp="leader-client"
             )
             await asyncio.wait_for(member_entered.wait(), 8)
+            await asyncio.wait_for(leader_entered.wait(), 8)
             state = await command(service, "messages", identifier)
             assert state["running"] and len(state["members"]) == 1
             member_id = state["members"][0]["session_id"]
             assert initial_root.team_id is None
-            await service._runtime._runs.stop(
-                user_id,
-                initial_root,
-                {"erpnext": "leader-client"},
-                intent="interrupted",
-            )
-
-            async def stopped() -> bool:
-                return not (await command(service, "messages", identifier))["running"]
-
-            await eventually(stopped)
-            user_id, _ = service._identity(("site", "owner"))
-            root = await service._runtime._storage.get_session(user_id, "", identifier)
-            member = await service._runtime._storage.get_session(user_id, "", member_id)
-            assert root is not None and member is not None
-            assert root.state.middle_context[CONTROL_KEY] == "interrupted"
-            assert member.state.middle_context[CONTROL_KEY] == "interrupted"
+            await command(service, action, identifier, erp="fresh-client")
+            await wait_for_idle(service._runtime, user_id, identifier)
+            state = await command(service, "messages", identifier)
+            assert not state["running"] and state["resumable"]
+            assert state["members"][0]["status"] == SessionStatus.RUNNING
+            member_task = service._runtime._run_registry.get(member_id)
+            assert member_task is not None and not member_task.done()
             release_member.set()
-            await command(service, "resume", identifier, erp="fresh-client")
 
             async def finished() -> bool:
                 history, _ = await service._runtime._storage.list_messages(
@@ -268,11 +278,15 @@ def test_native_team_context_controls_and_cleanup(
                 )
                 return (
                     bool(history and history[-1].finished_reason == "completed")
+                    and (await command(service, "messages", identifier))["messages"][
+                        -1
+                    ].get_text_content()
+                    == "负责人完成"
                     and not (await command(service, "messages", identifier))["running"]
                 )
 
             await eventually(finished)
-            assert owners == ["fresh-client"]
+            assert owners == ["leader-client"]
             assert (await command(service, "list", owner=("site", "other")))[
                 "sessions"
             ] == []
@@ -280,13 +294,20 @@ def test_native_team_context_controls_and_cleanup(
             await command(service, "cancel", identifier)
             assert (
                 await service._runtime._storage.get_session(user_id, "", member_id)
-                is None
-            )
-            assert (
-                await service._runtime._storage.get_agent(user_id, member.agent_id)
                 is not None
             )
             assert (await command(service, "messages", identifier))["messages"]
+            await command(service, "delete", identifier)
+            assert (
+                await service._runtime._storage.get_session(user_id, "", member_id)
+                is None
+            )
+            assert (
+                await service._runtime._storage.get_agent(
+                    user_id, state["members"][0]["agent_id"]
+                )
+                is not None
+            )
         for model in models:
             model.client.close.assert_awaited_once()
 
@@ -397,7 +418,11 @@ def test_native_mcp_and_skill_role_resources(
             monkeypatch.setattr(workspace, "add_mcp", unavailable)
             queued_models.append(Model([]))
             await command(service, "interrupt", identifier)
-            assert (await command(service, "messages", identifier))["resumable"]
+
+            async def interrupted() -> bool:
+                return (await command(service, "messages", identifier))["resumable"]
+
+            await eventually(interrupted)
             monkeypatch.setattr(workspace, "add_mcp", add_mcp)
             queued_models.extend(
                 [

@@ -111,7 +111,7 @@ class ConfiguredChatModel(ChatModelBase):
             "credential": settings.credential,
             "model": settings.model,
             "parameters": model_cls.Parameters(**settings.params),
-            "context_size": settings.context_size or 32768,
+            "context_size": settings.context_size,
             "max_retries": 0,
             "client_kwargs": settings.client_kwargs,
         }

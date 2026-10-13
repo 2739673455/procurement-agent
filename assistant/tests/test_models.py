@@ -64,6 +64,7 @@ def make_model() -> ModelFactory:
     "overrides",
     [
         {"credential": {"type": "unknown_credential", "api_key": "test"}},
+        {"context_size": None},
         {"params": {"max_tokens": -1}},
         {"params": {"reasoning_effort": "low"}},
     ],
@@ -75,7 +76,7 @@ def test_invalid_provider_configuration_rejected(overrides: dict[str, Any]) -> N
         "client_kwargs": {},
         "params": {},
         "image_inputs": False,
-        "context_size": None,
+        "context_size": 32768,
     }
     with pytest.raises(ValidationError):
         ModelConfig.model_validate({**config, **overrides})

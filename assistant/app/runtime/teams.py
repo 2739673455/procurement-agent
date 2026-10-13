@@ -3,7 +3,6 @@
 import json
 from typing import TypedDict
 
-from agentscope.app._manager import ChatRunRegistry
 from agentscope.app._service import SessionService, SessionStatus
 from agentscope.app.message_bus import MessageBus, MessageBusKeys
 from agentscope.app.storage import SessionRecord, StorageBase
@@ -25,6 +24,7 @@ class BackgroundTool(TypedDict):
     """框架后台任务注册表中的工具信息。"""
 
     tool_name: str
+    session_id: str
     agent_id: str
     started_at: float
 
@@ -33,7 +33,6 @@ class TeamSummary(TypedDict):
     """团队运行状态和待确认调用。"""
 
     members: list[TeamMemberStatus]
-    running: bool
     background_tasks: dict[str, BackgroundTool]
     confirmations: list[RequireUserConfirmEvent]
 
@@ -45,7 +44,6 @@ class TeamService:
         """绑定框架存储及会话状态服务。"""
         self._storage: StorageBase = runtime.storage
         self._session_service: SessionService = runtime.session_service
-        self._run_registry: ChatRunRegistry = runtime.chat_run_registry
         self._message_bus: MessageBus = runtime.message_bus
 
     async def scope(self, user_id: str, root: SessionRecord) -> list[SessionRecord]:
@@ -68,25 +66,23 @@ class TeamService:
         members: list[TeamMemberStatus] = []
         confirmations: list[RequireUserConfirmEvent] = []
         background_tasks: dict[str, BackgroundTool] = {}
-        running = False
         for row in await self.scope(user_id, root):
             status = await self._session_service.get_session_status(
                 user_id, row.agent_id, row.id
             )
             if status is None:
                 continue
-            task = self._run_registry.get(row.id)
             tools = await self._message_bus.registry_getall(
                 MessageBusKeys.bg_tasks(row.id)
             )
-            background_tasks.update(
-                {task_id: json.loads(metadata) for task_id, metadata in tools.items()}
-            )
-            running |= (
-                status == SessionStatus.RUNNING
-                or (task is not None and not task.done())
-                or bool(tools)
-            )
+            for task_id, payload in tools.items():
+                metadata = json.loads(payload)
+                background_tasks[task_id] = BackgroundTool(
+                    tool_name=metadata["tool_name"],
+                    session_id=row.id,
+                    agent_id=metadata["agent_id"],
+                    started_at=metadata["started_at"],
+                )
             agent = await self._storage.get_agent(user_id, row.agent_id)
             if row.id != root.id:
                 members.append(
@@ -94,7 +90,7 @@ class TeamService:
                         "agent_id": row.agent_id,
                         "session_id": row.id,
                         "name": agent.data.name if agent else row.agent_id,
-                        "status": SessionStatus.RUNNING if tools else status,
+                        "status": status,
                     }
                 )
             if status == SessionStatus.AWAITING_PERMISSION and agent is not None:
@@ -112,7 +108,6 @@ class TeamService:
                 )
         return {
             "members": members,
-            "running": running,
             "background_tasks": background_tasks,
             "confirmations": confirmations,
         }

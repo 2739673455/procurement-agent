@@ -28,6 +28,7 @@ from app.config import agents, mcp
 from app.config.loader import ROOT_DIR
 from app.contracts.sessions import Command
 from app.errors.agent import AgentError
+from app.runtime import Runtime
 from app.runtime.bootstrap import create_runtime
 from app.runtime.catalog import AgentCatalog
 from app.runtime.config import AgentDefinitions
@@ -100,11 +101,11 @@ def configured_catalog(
     )
 
 
-@asynccontextmanager
-async def service_at(path: Path) -> AsyncGenerator[SessionService]:
-    app = create_runtime(
+def build_runtime(path: Path, *, catalog: AgentCatalog | None = None) -> Runtime:
+    """为测试装配本地存储、工作空间和通用运行模块。"""
+    return create_runtime(
         AsyncSQLAlchemyStorage(f"sqlite+aiosqlite:///{path / 'state.db'}"),
-        catalog=configured_catalog(),
+        catalog=catalog if catalog is not None else configured_catalog(),
         message_bus=InMemoryMessageBus(),
         injection_config=InjectionConfig(timezone="Asia/Shanghai"),
         context_ttl_seconds=3600,
@@ -112,7 +113,11 @@ async def service_at(path: Path) -> AsyncGenerator[SessionService]:
             str(path / "workspaces"), isolation=IsolationPolicy.PER_USER
         ),
     )
-    async with app:
+
+
+@asynccontextmanager
+async def service_at(path: Path) -> AsyncGenerator[SessionService]:
+    async with build_runtime(path) as app:
         yield SessionService(app)
 
 
@@ -132,6 +137,13 @@ async def command(
         owner,
         cast(ERPNext, erp),
     )
+
+
+async def wait_for_idle(runtime: Runtime, user_id: str, session_id: str) -> None:
+    """测试通过真实会话状态等待当前回复收尾，不向生产接口增加等待方法。"""
+    async with asyncio.timeout(10):
+        while (await runtime.messages(user_id, session_id))["running"]:
+            await asyncio.sleep(0.01)
 
 
 @asynccontextmanager
@@ -517,6 +529,11 @@ def test_stop_during_tools_preserves_result_pairs(
                 await command(service, "send", identifier, message="query")
                 await asyncio.wait_for(entered.wait(), 5)
                 await command(service, action, identifier)
+                await wait_for_idle(
+                    service._runtime,
+                    service._identity(("site", "owner"))[0],
+                    identifier,
+                )
                 assert started == exited == count
             assert any(
                 e["type"] == "REPLY_END" and e["finished_reason"] == "interrupted"
@@ -541,11 +558,13 @@ def test_stop_during_tools_preserves_result_pairs(
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("action", ["complete", "interrupt", "cancel", "tool_stop"])
+@pytest.mark.parametrize(
+    "action", ["complete", "interrupt", "cancel", "tool_stop", "message"]
+)
 def test_background_tool_state_delivery_and_stop(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, action: str
 ) -> None:
-    """后台工具计入运行状态，迟到结果自动唤醒，停止操作等待工具清理。"""
+    """后台工具独立运行；中断保留工具，新输入不受阻，结果按原生机制唤醒。"""
     from agentscope.app._manager._background_task_manager import ToolStop
     from agentscope.app.middleware import ToolOffloadMiddleware
     from agentscope.message import Base64Source, DataBlock, HintBlock, TextBlock
@@ -557,7 +576,7 @@ def test_background_tool_state_delivery_and_stop(
     initialize = ToolOffloadMiddleware.__init__
 
     def initialize_fast(self: ToolOffloadMiddleware, *args: Any, **kwargs: Any) -> None:
-        """缩短框架等待时间，测试仍经过真实后台转移和消息投递。"""
+        """缩短框架等待时间，仍经过真实后台转移和消息投递。"""
         initialize(self, *args, **kwargs, timeout_secs=0.05)
 
     monkeypatch.setattr(ToolOffloadMiddleware, "__init__", initialize_fast)
@@ -605,85 +624,91 @@ def test_background_tool_state_delivery_and_stop(
             identifier = (await command(service, "create"))["id"]
             await run_turn(service, identifier, message="查询")
             history = await command(service, "messages", identifier)
-            assert history["running"]
-            assert not history["resumable"]
-            assert [
-                task["tool_name"] for task in history["background_tasks"].values()
-            ] == ["query_items"]
+            assert not history["running"] and not history["resumable"]
+            tasks = list(history["background_tasks"].values())
+            assert [(task["tool_name"], task["session_id"]) for task in tasks] == [
+                ("query_items", identifier)
+            ]
             assert first.tools is not None
             assert "ToolStop" in {tool["function"]["name"] for tool in first.tools}
-            with pytest.raises(RunError, match="正在执行"):
-                await command(service, "send", identifier, message="不能抢跑")
 
-            if action == "complete":
-                release.set()
+            if action == "interrupt":
+                idle = Model([])
+                models.insert(0, idle)
+                await command(service, "interrupt", identifier)
                 async with asyncio.timeout(5):
-                    while True:
-                        history = await command(service, "messages", identifier)
-                        if (
-                            not history["running"]
-                            and history["messages"][-1].get_text_content() == "后续回复"
-                        ):
-                            break
+                    while not idle.client.close.await_count:
                         await asyncio.sleep(0.01)
-                hints = [
-                    block
-                    for message in following.inputs[0]
-                    for block in message.content
-                    if isinstance(block, HintBlock)
+                assert not idle.inputs
+                assert not cancelled.is_set() and not exited.is_set()
+                assert (await command(service, "messages", identifier))[
+                    "background_tasks"
                 ]
-                assert any("call1" in (hint.source or "") for hint in hints)
-                blocks = [
-                    block
-                    for hint in hints
-                    if isinstance(hint.hint, list)
-                    for block in hint.hint
+            elif action == "message":
+                models.insert(0, Model([response("新问题已处理")]))
+                await run_turn(service, identifier, message="新问题")
+                assert (await command(service, "messages", identifier))[
+                    "background_tasks"
                 ]
-                assert any(
-                    isinstance(b, TextBlock) and "LATE_RESULT" in b.text for b in blocks
-                )
-                assert any(
-                    isinstance(b, DataBlock)
-                    and isinstance(b.source, Base64Source)
-                    and b.source.data == "cG5n"
-                    for b in blocks
-                )
-            else:
-                if action == "tool_stop":
+
+            if action in {"cancel", "tool_stop"}:
+                if action == "cancel":
+                    await command(service, "cancel", identifier)
+                else:
                     tools = await service._runtime._app.state.background_task_manager.list_tools(
                         identifier
                     )
                     await cast(ToolStop, tools[0])(
                         next(iter(history["background_tasks"]))
                     )
-                stopping = asyncio.create_task(
-                    command(
-                        service,
-                        "cancel" if action == "tool_stop" else action,
-                        identifier,
-                    )
-                )
                 await asyncio.wait_for(cancelled.wait(), 5)
-                await asyncio.sleep(0.01)
-                assert not stopping.done()
+                assert not exited.is_set()
                 cleanup.set()
-                await asyncio.wait_for(stopping, 5)
-                assert exited.is_set()
-                history = await command(service, "messages", identifier)
-                assert not history["running"]
-                assert not history["background_tasks"]
-                assert not following.inputs
-                if action == "interrupt":
-                    assert history["resumable"]
-                    await command(service, "resume", identifier)
-                    task = service._runtime._app.state.chat_run_registry.get(identifier)
-                    assert task is not None
-                    await asyncio.wait_for(task, 5)
-                else:
-                    assert not history["resumable"]
-                    await run_turn(service, identifier, message="新任务")
+            else:
+                release.set()
+
+            # Toolkit 取消收尾也会产生原生结果；不再拦截框架的后续唤醒。
+            async with asyncio.timeout(5):
+                while True:
+                    history = await command(service, "messages", identifier)
+                    if (
+                        not history["running"]
+                        and not history["background_tasks"]
+                        and history["messages"][-1].get_text_content() == "后续回复"
+                    ):
+                        break
+                    await asyncio.sleep(0.01)
+            assert exited.is_set()
+            hints = [
+                block
+                for message in following.inputs[0]
+                for block in message.content
+                if isinstance(block, HintBlock)
+            ]
+            assert any("call1" in (hint.source or "") for hint in hints)
+            blocks = [
+                block
+                for hint in hints
+                if isinstance(hint.hint, list)
+                for block in hint.hint
+            ]
+            if action in {"cancel", "tool_stop"}:
+                assert any(
+                    isinstance(block, TextBlock) and "interrupted" in block.text
+                    for block in blocks
+                )
+            else:
+                assert any(
+                    isinstance(block, TextBlock) and "LATE_RESULT" in block.text
+                    for block in blocks
+                )
+                assert any(
+                    isinstance(block, DataBlock)
+                    and isinstance(block.source, Base64Source)
+                    and block.source.data == "cG5n"
+                    for block in blocks
+                )
             assert not models
-            assert not (await command(service, "messages", identifier))["running"]
 
     asyncio.run(scenario())
 

@@ -30,6 +30,7 @@ export function useSession() {
 	const [attachments, setAttachments] = useState<Attachment[]>([]);
 	const [busy, setBusy] = useState(false);
 	const [resumable, setResumable] = useState(false);
+	const [sessionStatus, setSessionStatus] = useState("idle");
 	const [members, setMembers] = useState<TeamMember[]>([]);
 	const [backgroundTasks, setBackgroundTasks] = useState<
 		Record<string, BackgroundTool>
@@ -77,8 +78,12 @@ export function useSession() {
 	}
 	/** 使用框架状态更新任务控制和 Agent 团队成员。 */
 	function applyState(history: History) {
-		running.current = history.running;
+		running.current =
+			history.running ||
+			Object.keys(history.background_tasks).length > 0 ||
+			history.members.some((member) => member.status === "running");
 		setBusy(history.running);
+		setSessionStatus(history.status);
 		setResumable(history.resumable);
 		setMembers(history.members);
 		setBackgroundTasks(history.background_tasks);
@@ -97,13 +102,7 @@ export function useSession() {
 			if (!history.running) {
 				setMessages(history.messages);
 				const last = history.messages[history.messages.length - 1];
-				setStatus(
-					history.intent === "cancelled"
-						? "任务已取消。"
-						: history.resumable
-							? "可从保存的上下文继续。"
-							: "",
-				);
+				setStatus(history.resumable ? "可从保存的上下文继续。" : "");
 				if (last?.finished_reason === ReplyFinishedReason.ERROR)
 					setError("执行失败或超时，请稍后重试。");
 				if (last?.finished_reason === ReplyFinishedReason.EXCEED_MAX_ITERS)
@@ -221,6 +220,7 @@ export function useSession() {
 		setLoading(Boolean(id));
 		setBusy(false);
 		setResumable(false);
+		setSessionStatus("idle");
 		setMembers([]);
 		setBackgroundTasks({});
 		setConfirmations([]);
@@ -469,6 +469,7 @@ export function useSession() {
 		status,
 		error,
 		resumable,
+		sessionStatus,
 		members,
 		backgroundTasks,
 		confirmations,

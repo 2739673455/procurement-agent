@@ -19,7 +19,7 @@ from .catalog import AgentCatalog
 from .context import ContextRegistry
 from .models import ChatCredential, ModelClients
 from .offloading import ToolExecutionMiddleware
-from .resources import RoleMiddleware, RunControlMiddleware, equip_resources
+from .resources import RoleMiddleware, equip_resources
 from .runs import RunController
 from .runtime import Runtime
 from .teams import TeamService
@@ -65,15 +65,9 @@ def create_runtime(
             agent_id,
             session_id,
             definition,
-            active=context.intent == "active",
         )
-        business_tools = (
-            catalog.create_tools(definition, context)
-            if context.intent == "active"
-            else []
-        )
+        business_tools = catalog.create_tools(definition, context)
         return [
-            RunControlMiddleware(contexts, context, message_bus),
             RoleMiddleware(
                 definition,
                 catalog=catalog,
@@ -85,9 +79,7 @@ def create_runtime(
                 session_id=session_id,
                 business_tools=business_tools,
             ),
-            *await session_directory_middlewares(
-                user_id, agent_id, session_id, workspace
-            ),
+            *await session_directory_middlewares(session_id, workspace),
         ]
 
     runtime = create_app(

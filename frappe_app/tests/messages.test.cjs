@@ -279,6 +279,8 @@ test("运行控制提交独立动作和原生确认结果，界面显示恢复�
 	}
 	const html = renderToStaticMarkup(
 		React.createElement(RunControls, {
+			sessionId: "session",
+			status: "idle",
 			busy: false,
 			resumable: true,
 			disabled: false,
@@ -287,7 +289,12 @@ test("运行控制提交独立动作和原生确认结果，界面显示恢复�
 			],
 			confirmations: [confirmation],
 			backgroundTasks: {
-				tool: { tool_name: "query_items", agent_id: "worker", started_at: 0 },
+				tool: {
+					tool_name: "query_items",
+					agent_id: "assistant",
+					session_id: "session",
+					started_at: 0,
+				},
 			},
 			onResume() {},
 			onCancel() {},
@@ -295,12 +302,51 @@ test("运行控制提交独立动作和原生确认结果，界面显示恢复�
 		}),
 	);
 	assert.match(html, /继续执行/);
-	assert.match(html, /取消任务/);
+	assert.match(html, /取消当前运行/);
 	assert.match(html, /允许本次调用/);
 	assert.match(html, /<fieldset aria-label="工具权限确认">/);
 	assert.match(html, /分析员：等待确认/);
 	assert.match(html, /query_items：后台执行中/);
 	assert.match(html, /echo hello/);
+});
+
+test("原生运行控制区分当前回复等待和成员后台活动", () => {
+	const {
+		RunControls,
+	} = require("../public/frontend/components/RunControls.tsx");
+	const props = {
+		sessionId: "session",
+		status: "awaiting_permission",
+		busy: false,
+		resumable: false,
+		disabled: false,
+		members: [],
+		confirmations: [],
+		backgroundTasks: {},
+		onResume() {},
+		onInterrupt() {},
+		onCancel() {},
+		onConfirm() {},
+	};
+	const parked = renderToStaticMarkup(React.createElement(RunControls, props));
+	assert.match(parked, /中断当前回复/);
+	assert.doesNotMatch(parked, /取消当前运行/);
+	const member = renderToStaticMarkup(
+		React.createElement(RunControls, {
+			...props,
+			status: "idle",
+			backgroundTasks: {
+				tool: {
+					tool_name: "Bash",
+					session_id: "worker",
+					agent_id: "worker",
+					started_at: 0,
+				},
+			},
+		}),
+	);
+	assert.match(member, /Bash：后台执行中/);
+	assert.doesNotMatch(member, /中断当前回复|取消当前运行/);
 });
 
 test("附件上传绑定当前会话并通过助手入口传递原始内容", async () => {

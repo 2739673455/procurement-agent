@@ -52,13 +52,13 @@ export const api = {
 	/** 读取会话消息及运行状态。 */
 	history: (id: string, signal: AbortSignal) =>
 		command<History>("messages", { session_id: id }, signal),
-	/** 中断负责人 Agent 及成员 Agent，保存上下文以便继续。 */
+	/** 中断当前回复，保留后台工具和成员 Agent 的运行。 */
 	interrupt: (id: string, signal: AbortSignal) =>
 		command("interrupt", { session_id: id }, signal),
 	/** 加载已保存上下文继续执行。 */
 	resume: (id: string, signal: AbortSignal) =>
 		command("resume", { session_id: id }, signal),
-	/** 结束当前任务并解散 Agent 团队，保留对话历史。 */
+	/** 取消当前会话的回复及后台工具，保留上下文和团队。 */
 	cancel: (id: string, signal: AbortSignal) =>
 		command("cancel", { session_id: id }, signal),
 	/** 将框架原生确认结果提交到所属 Agent 会话。 */

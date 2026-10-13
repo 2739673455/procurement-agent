@@ -55,6 +55,8 @@ export function AssistantPanel({ onClose }: { onClose(): void }) {
 				{chat.status}
 			</p>
 			<RunControls
+				sessionId={chat.current}
+				status={chat.sessionStatus}
 				busy={chat.busy}
 				resumable={chat.resumable}
 				members={chat.members}
@@ -62,6 +64,7 @@ export function AssistantPanel({ onClose }: { onClose(): void }) {
 				confirmations={chat.confirmations}
 				disabled={chat.loading || chat.controlling}
 				onResume={chat.resume}
+				onInterrupt={chat.interrupt}
 				onCancel={chat.cancel}
 				onConfirm={chat.confirm}
 			/>
@@ -72,7 +75,8 @@ export function AssistantPanel({ onClose }: { onClose(): void }) {
 					!chat.current ||
 					chat.loading ||
 					chat.controlling ||
-					chat.confirmations.length > 0
+					chat.sessionStatus === "awaiting_permission" ||
+					chat.sessionStatus === "awaiting_external_result"
 				}
 				uploading={chat.uploading}
 				attachments={chat.attachments}

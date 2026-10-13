@@ -14,17 +14,13 @@ class ModelConfig(BaseModel):
     model: str = Field(min_length=1)  # 服务商的模型标识，不可为空。
     client_kwargs: dict[str, Any]  # 传给提供商 SDK 的连接选项，例如 timeout。
     image_inputs: bool  # 是否允许向模型发送图片附件。
-    context_size: int | None = Field(gt=0)  # 上下文 token 预算；null 时使用 32768。
+    context_size: int = Field(gt=0)  # 显式指定正整数上下文 token 预算。
     params: dict[str, Any]  # 提供商原生 Parameters 字段，无附加参数时填写 {}。
 
     @field_validator("credential", mode="before")
     @classmethod
-    def _parse_credential(
-        cls, value: CredentialBase | dict[str, Any]
-    ) -> CredentialBase:
-        """由框架凭据工厂解析提供商配置，并保护密钥字段。"""
-        if isinstance(value, CredentialBase):
-            return value
+    def _parse_credential(cls, value: dict[str, Any]) -> CredentialBase:
+        """由框架凭据工厂解析提供商配置字典，并保护密钥字段。"""
         return CredentialFactory.from_dict(value)
 
     @model_validator(mode="after")

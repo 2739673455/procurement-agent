@@ -1,23 +1,22 @@
-"""角色资源装配与运行意图中间件，复用框架工作空间和 Toolkit。"""
+"""角色资源装配与能力限制，复用框架工作空间和 Toolkit。"""
 
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
 from agentscope.agent import Agent
 from agentscope.app._tool import AgentInvite
-from agentscope.app.message_bus import MessageBus, MessageBusKeys
+from agentscope.app.message_bus import MessageBus
 from agentscope.app.storage import AgentRecord, StorageBase
 from agentscope.app.workspace_manager import WorkspaceManagerBase
-from agentscope.event import AgentEvent, UserInterruptEvent
+from agentscope.event import AgentEvent
 from agentscope.mcp import MCPClient
-from agentscope.message import HintBlock, Msg
+from agentscope.message import Msg
 from agentscope.middleware import MiddlewareBase
 from agentscope.tool import ToolBase
 from agentscope.workspace import WorkspaceBase
 
 from .catalog import AgentCatalog
 from .config import AgentDefinition
-from .context import CONTROL_KEY, ContextRegistry, RunContext
 
 
 async def equip_resources(
@@ -26,8 +25,6 @@ async def equip_resources(
     agent_id: str,
     session_id: str,
     definition: AgentDefinition,
-    *,
-    active: bool = True,
 ) -> None:
     """按角色装配资源，安装记录、连接和操作锁由框架管理。"""
     # list_mcps 会建立连接；直接读取框架声明，避免中断收尾重连 MCP。
@@ -35,7 +32,7 @@ async def equip_resources(
         client.name: client
         for client in workspace._declared_specs(agent_id, session_id)
     }
-    desired = {name: catalog.mcps[name] for name in definition.mcps} if active else {}
+    desired = {name: catalog.mcps[name] for name in definition.mcps}
     for name, client in list(current.items()):
         if name not in desired or client.model_dump() != desired[name].model_dump():
             await workspace.remove_mcp(name, agent_id=agent_id, session_id=session_id)
@@ -47,9 +44,6 @@ async def equip_resources(
                 agent_id=agent_id,
                 session_id=session_id,
             )
-    if not active:
-        return
-
     installed = {skill.name for skill in await workspace.list_skills(agent_id=agent_id)}
     for name in definition.skills:
         if name in installed:
@@ -137,43 +131,5 @@ class RoleMiddleware(MiddlewareBase):
                         self._agent_id,
                         invitable_pool=pool,
                     )
-        async for event in next_handler(**input_kwargs):
-            yield event
-
-
-class RunControlMiddleware(MiddlewareBase):
-    """阻止已中断或取消任务的自动续跑，保留原生 Agent 团队提示供恢复时使用。"""
-
-    def __init__(
-        self,
-        contexts: ContextRegistry,
-        context: RunContext,
-        message_bus: MessageBus,
-    ) -> None:
-        """绑定当前任务上下文及框架消息总线。"""
-        self._contexts = contexts
-        self._context = context
-        self._message_bus = message_bus
-
-    async def on_reply(
-        self,
-        agent: Agent,
-        input_kwargs: dict[str, Any],
-        next_handler: Callable[..., AsyncGenerator[AgentEvent | Msg]],
-    ) -> AsyncGenerator[AgentEvent | Msg]:
-        """允许显式中断事件收尾；被阻止的唤醒只保存队列提示，不调用模型。"""
-        intent = self._contexts.intent(self._context)
-        agent.state.middle_context[CONTROL_KEY] = intent
-        if intent != "active" and not isinstance(
-            input_kwargs.get("inputs"), UserInterruptEvent
-        ):
-            while entries := await self._message_bus.queue_drain(
-                MessageBusKeys.inbox(agent.state.session_id), max_count=100
-            ):
-                agent.state.append_context(
-                    agent.name,
-                    [HintBlock.model_validate(payload) for _, payload in entries],
-                )
-            return
         async for event in next_handler(**input_kwargs):
             yield event

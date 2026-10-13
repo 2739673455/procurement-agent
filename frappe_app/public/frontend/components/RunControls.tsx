@@ -1,8 +1,10 @@
 import type { RequireUserConfirmEvent } from "@agentscope-ai/agentscope/event";
 import type { BackgroundTool, TeamMember } from "../types";
 
-/** 当前任务的恢复、取消和原生工具确认操作。 */
+/** 当前会话的运行控制和原生工具确认操作。 */
 interface Props {
+	sessionId: string | null;
+	status: string;
 	busy: boolean;
 	resumable: boolean;
 	members: TeamMember[];
@@ -10,6 +12,7 @@ interface Props {
 	confirmations: RequireUserConfirmEvent[];
 	disabled: boolean;
 	onResume(): Promise<void>;
+	onInterrupt(): Promise<void>;
 	onCancel(): Promise<void>;
 	onConfirm(event: RequireUserConfirmEvent, confirmed: boolean): Promise<void>;
 }
@@ -77,14 +80,29 @@ export function RunControls(props: Props) {
 					继续执行
 				</button>
 			)}
-			{(props.busy || props.resumable || props.confirmations.length > 0) && (
+			{!props.busy &&
+				(props.status === "awaiting_permission" ||
+					props.status === "awaiting_external_result") && (
+					<button
+						type="button"
+						className="btn btn-default btn-sm"
+						disabled={props.disabled}
+						onClick={() => void props.onInterrupt()}
+					>
+						中断当前回复
+					</button>
+				)}
+			{(props.busy ||
+				Object.values(props.backgroundTasks).some(
+					(task) => task.session_id === props.sessionId,
+				)) && (
 				<button
 					type="button"
 					className="btn btn-default btn-sm"
 					disabled={props.disabled}
 					onClick={() => void props.onCancel()}
 				>
-					取消任务
+					取消当前运行
 				</button>
 			)}
 		</div>

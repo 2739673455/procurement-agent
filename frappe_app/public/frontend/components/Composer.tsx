@@ -9,7 +9,7 @@ interface Props {
 	attachments: Attachment[];
 	/** 发送正文及页面携带选项，返回服务端是否接受本次发送。 */
 	onSend(text: string, context: boolean): Promise<boolean>;
-	/** 中断当前任务并保存上下文。 */
+	/** 请求中断当前回复。 */
 	onInterrupt(): Promise<void>;
 	/** 上传选择的文件并加入待发送附件列表。 */
 	onUpload(files: File[]): Promise<void>;

@@ -39,6 +39,13 @@ def stream(delta: dict[str, Any], reason: str) -> httpx.Response:
     )
 
 
+async def wait_for_idle(app: Any, session_id: str) -> None:
+    """独立宿主通过公共状态读取等待当前回复完成。"""
+    async with asyncio.timeout(10):
+        while (await app.messages("opaque-user", session_id))["running"]:
+            await asyncio.sleep(0.01)
+
+
 async def main() -> None:
     """并行运行两个模型配置相同名称的实例，再中断、恢复和取消。"""
     assert "app" not in sys.modules
@@ -228,16 +235,17 @@ async def main() -> None:
                     row.id,
                     {"value": f"{name}-resource"},
                 )
+                await wait_for_idle(state, row.id)
                 assert (await state.messages("opaque-user", row.id))["resumable"]
                 await state.resume("opaque-user", row.id, {"value": f"{name}-resource"})
-                await state.wait("opaque-user", row.id)
+                await wait_for_idle(state, row.id)
                 messages = (await state.messages("opaque-user", row.id))["messages"]
                 assert (
                     len([message for message in messages if message.role == "user"])
                     == 1
                 )
                 assert messages[-1].get_text_content() == f"{name}-done"
-                await state.cancel("opaque-user", row.id)
+                await state.cancel("opaque-user", row.id, {"value": f"{name}-resource"})
                 assert not (await state.messages("opaque-user", row.id))["resumable"]
                 records = await storages[name].list_credentials("opaque-user")
                 assert "secret" not in str([record.data for record in records])

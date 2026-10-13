@@ -4,16 +4,28 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from agentscope.app._service import SessionStatus
 from agentscope.event import UserConfirmResultEvent
 from agentscope.message import UserMsg
+from test_runs import build_runtime, configured_catalog
 
-from app.runtime import RunError
-from examples.standalone import build_runtime
+from app.runtime import RunError, Runtime
+
+
+def api_runtime(path: Path) -> Runtime:
+    """公共 API 测试不装配需要 ERP 身份的业务工具。"""
+    definitions = configured_catalog().definitions.model_copy(deep=True)
+    for definition in definitions.agents.values():
+        definition.tool_factories = []
+        definition.builtin_tools = []
+        definition.skills = []
+        definition.mcps = []
+    return build_runtime(path, catalog=configured_catalog(definitions, mcps={}))
 
 
 def test_public_session_lifecycle_and_restart(tmp_path: Path) -> None:
     async def scenario() -> None:
-        runtime = build_runtime(tmp_path, "test-only")
+        runtime = api_runtime(tmp_path)
         with pytest.raises(RuntimeError, match="async with"):
             await runtime.create("owner")
         async with runtime:
@@ -22,8 +34,8 @@ def test_public_session_lifecycle_and_restart(tmp_path: Path) -> None:
             with pytest.raises(RunError, match="未配置"):
                 await runtime.create("owner", agent="missing")
             first = await runtime.create("owner", title="First")
-            second = await runtime.create("owner", agent="helper")
-            assert first.agent_id == runtime.catalog.agent_id("owner", "helper")
+            second = await runtime.create("owner", agent="procurement")
+            assert first.agent_id == runtime.catalog.agent_id("owner", "procurement")
             assert first.config.workspace_id == second.config.workspace_id
             assert (await runtime.list("other"))["sessions"] == []
             assert len((await runtime.list("owner"))["sessions"]) == 2
@@ -37,22 +49,24 @@ def test_public_session_lifecycle_and_restart(tmp_path: Path) -> None:
             assert invalid.value.code == "invalid_input"
             await runtime.rename("owner", first.id, " Renamed ")
             assert (await runtime.get("owner", first.id)).config.name == "Renamed"
-            await runtime.cancel("owner", first.id)
-            assert (await runtime.messages("owner", first.id))["intent"] == "cancelled"
-            await runtime.delete("owner", second.id)
+            await runtime.cancel("owner", first.id, {})
+            assert (await runtime.messages("owner", first.id))[
+                "status"
+            ] == SessionStatus.IDLE
+            await runtime.delete("owner", second.id, {})
             with pytest.raises(RunError):
                 await runtime.get("owner", second.id)
         with pytest.raises(RuntimeError, match="async with"):
             await runtime.list("owner")
-        async with build_runtime(tmp_path, "replacement-secret") as restarted:
+        async with api_runtime(tmp_path) as restarted:
             sessions = (await restarted.list("owner"))["sessions"]
             assert [(row["id"], row["title"]) for row in sessions] == [
                 (first.id, "Renamed")
             ]
             assert (await restarted.messages("owner", first.id))[
-                "intent"
-            ] == "cancelled"
-            await restarted.delete("owner", first.id)
+                "status"
+            ] == SessionStatus.IDLE
+            await restarted.delete("owner", first.id, {})
             assert (await restarted.list("owner"))["sessions"] == []
 
     asyncio.run(scenario())
@@ -60,25 +74,25 @@ def test_public_session_lifecycle_and_restart(tmp_path: Path) -> None:
 
 def test_all_public_operations_check_ownership(tmp_path: Path) -> None:
     async def scenario() -> None:
-        async with build_runtime(tmp_path, "test-only") as runtime:
+        async with api_runtime(tmp_path) as runtime:
             row = await runtime.create("owner")
             operations = [
                 lambda: runtime.get("intruder", row.id),
                 lambda: runtime.messages("intruder", row.id),
                 lambda: runtime.rename("intruder", row.id, "Stolen"),
-                lambda: runtime.delete("intruder", row.id),
+                lambda: runtime.delete("intruder", row.id, {}),
                 lambda: runtime.send(
-                    "intruder", row.id, UserMsg(name="user", content="No")
+                    "intruder", row.id, UserMsg(name="user", content="No"), {}
                 ),
-                lambda: runtime.resume("intruder", row.id),
-                lambda: runtime.interrupt("intruder", row.id),
-                lambda: runtime.cancel("intruder", row.id),
+                lambda: runtime.resume("intruder", row.id, {}),
+                lambda: runtime.interrupt("intruder", row.id, {}),
+                lambda: runtime.cancel("intruder", row.id, {}),
                 lambda: runtime.confirm(
                     "intruder",
                     row.id,
                     UserConfirmResultEvent(reply_id="missing", confirm_results=[]),
+                    {},
                 ),
-                lambda: runtime.wait("intruder", row.id),
                 lambda: runtime.subscribe("intruder", row.id),
             ]
             for operation in operations:
@@ -94,15 +108,15 @@ def test_reference_sessions_and_paginated_history(tmp_path: Path) -> None:
     """从原生存储写入边界数据，验证公共读取不泄漏内部会话且完整分页。"""
     from agentscope.app.storage import TeamOrigin
 
-    from app.runtime import AgentRegistry
+    from app.runtime.agents import AgentRegistry
 
     async def scenario() -> None:
-        runtime = build_runtime(tmp_path, "test-only")
+        runtime = api_runtime(tmp_path)
         definitions = runtime.catalog.definitions
-        worker = definitions.agents["helper"].model_copy(deep=True)
+        worker = definitions.agents["procurement"].model_copy(deep=True)
         worker.name = "Worker"
         definitions.agents["worker"] = worker
-        definitions.agents["helper"].members = ["worker"]
+        definitions.agents["procurement"].members = ["worker"]
         async with runtime:
             row = await runtime.create("owner")
             reference = AgentRegistry.reference_session_id("owner", "worker")
@@ -116,7 +130,14 @@ def test_reference_sessions_and_paginated_history(tmp_path: Path) -> None:
             assert [
                 item["id"] for item in (await runtime.list("owner"))["sessions"]
             ] == [row.id]
-            history = [UserMsg(name="user", content=str(i)) for i in range(205)]
+            history = [
+                UserMsg(
+                    id=f"message-{i:03}",
+                    name="user",
+                    content=str(i),
+                )
+                for i in range(205)
+            ]
             for message in history:
                 await runtime._storage.upsert_message("owner", row.id, message)
             snapshot = await runtime.messages("owner", row.id)
@@ -133,7 +154,7 @@ def test_shutdown_waits_for_inflight_session_operation(
     """关闭与会话写入竞争时，先完成写入，再关闭底层资源。"""
 
     async def scenario() -> None:
-        runtime = build_runtime(tmp_path, "test-only")
+        runtime = api_runtime(tmp_path)
         await runtime.__aenter__()
         entered, release = asyncio.Event(), asyncio.Event()
         upsert = runtime._storage.upsert_session
@@ -154,39 +175,8 @@ def test_shutdown_waits_for_inflight_session_operation(
         await shutdown
         with pytest.raises(RuntimeError, match="async with"):
             await runtime.get("owner", row.id)
-        async with build_runtime(tmp_path, "test-only") as restarted:
+        async with api_runtime(tmp_path) as restarted:
             assert (await restarted.get("owner", row.id)).id == row.id
-
-    asyncio.run(scenario())
-
-
-def test_wait_cancellation_does_not_cancel_run(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """等待者取消不影响模型；显式取消仍能取得入口锁并完成清理。"""
-    from test_runs import Model, use_models
-
-    async def scenario() -> None:
-        entered = asyncio.Event()
-        model = Model([], entered)
-        use_models(monkeypatch, [model])
-        async with build_runtime(tmp_path, "test-only") as runtime:
-            row = await runtime.create("owner")
-            await runtime.send("owner", row.id, UserMsg(name="user", content="Wait"))
-            await asyncio.wait_for(entered.wait(), 5)
-            waiter = asyncio.create_task(runtime.wait("owner", row.id))
-            await asyncio.sleep(0)
-            waiter.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await waiter
-            assert (await runtime.messages("owner", row.id))["running"]
-            model.client.close.assert_not_awaited()
-            waiter = asyncio.create_task(runtime.wait("owner", row.id))
-            await asyncio.wait_for(runtime.cancel("owner", row.id), 5)
-            await asyncio.wait_for(waiter, 5)
-            snapshot = await runtime.messages("owner", row.id)
-            assert not snapshot["running"] and snapshot["intent"] == "cancelled"
-            model.client.close.assert_awaited_once()
 
     asyncio.run(scenario())
 
@@ -200,7 +190,7 @@ def test_sse_disconnect_and_runtime_shutdown_release_subscribers(
     from agentscope.app.message_bus import MessageBusKeys
 
     async def scenario() -> None:
-        runtime = build_runtime(tmp_path, "test-only")
+        runtime = api_runtime(tmp_path)
         await runtime.__aenter__()
         row = await runtime.create("owner")
         bus = runtime._message_bus
@@ -255,12 +245,12 @@ def test_exceptional_shutdown_cleans_active_run(
         entered = asyncio.Event()
         model = Model([], entered)
         use_models(monkeypatch, [model])
-        runtime = build_runtime(tmp_path, "test-only")
+        runtime = api_runtime(tmp_path)
         with pytest.raises(ValueError, match="host failed"):
             async with runtime:
                 row = await runtime.create("owner")
                 await runtime.send(
-                    "owner", row.id, UserMsg(name="user", content="Wait")
+                    "owner", row.id, UserMsg(name="user", content="Wait"), {}
                 )
                 await asyncio.wait_for(entered.wait(), 5)
                 task = runtime._run_registry.get(row.id)

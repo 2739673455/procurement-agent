@@ -96,7 +96,7 @@ def session_directory(workspace: WorkspaceBase, session_id: str) -> str:
 
 
 async def session_directory_middlewares(
-    user_id: str, agent_id: str, session_id: str, workspace: WorkspaceBase
+    session_id: str, workspace: WorkspaceBase
 ) -> list[MiddlewareBase]:
     """首次执行时创建会话目录，并为本轮框架工具生成目录绑定中间件。"""
     backend = workspace.get_backend()

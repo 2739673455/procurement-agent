@@ -28,7 +28,7 @@ from starlette.responses import StreamingResponse
 
 from .agents import AgentRegistry
 from .catalog import AgentCatalog
-from .context import CONTROL_KEY, ContextRegistry
+from .context import ContextRegistry
 from .errors import RunError
 from .runs import RunController
 from .teams import TeamService, TeamSummary
@@ -46,7 +46,7 @@ class SessionSnapshot(TeamSummary):
     """会话历史与团队运行状态的类型化快照。"""
 
     messages: list[Msg]
-    intent: str
+    running: bool
     status: SessionStatus | None
     resumable: bool
 
@@ -192,21 +192,23 @@ class Runtime:
                     break
                 before = page[0].id
             summary = await self._teams.summary(user_id, row)
+            status = await self._session_service.get_session_status(
+                user_id, row.agent_id, row.id
+            )
+            task = self._run_registry.get(row.id)
             return {
                 "messages": history,
-                "intent": row.state.middle_context.get(CONTROL_KEY) or "active",
                 **summary,
-                "status": await self._session_service.get_session_status(
-                    user_id, row.agent_id, row.id
-                ),
-                "resumable": not summary["running"]
-                and await self._runs.resumable(user_id, row),
+                "status": status,
+                "running": status == SessionStatus.RUNNING
+                or (task is not None and not task.done()),
+                "resumable": await self._runs.resumable(user_id, row),
             }
 
     async def rename(
         self, user_id: str, session_id: str, title: str
     ) -> dict[str, bool]:
-        """修改整个任务范围空闲的会话标题。"""
+        """修改当前会话空闲时的标题。"""
         async with self._lock:
             row = await self._get_session(user_id, session_id)
             if not title.strip():
@@ -220,12 +222,12 @@ class Runtime:
             return {"ok": True}
 
     async def delete(
-        self, user_id: str, session_id: str, clients: dict[str, Any] | None = None
+        self, user_id: str, session_id: str, clients: dict[str, Any]
     ) -> dict[str, bool]:
-        """停止整个任务后由框架删除会话、Agent 团队、消息及工作空间会话资源。"""
+        """由框架停止并删除会话及其团队、消息和工作空间会话资源。"""
         async with self._lock:
             row = await self._get_session(user_id, session_id)
-            await self._runs.stop(user_id, row, clients or {}, intent="cancelled")
+            self._contexts.bind(user_id, row.id, clients)
             await self._session_service.delete_session(user_id, row.agent_id, row.id)
             self._contexts.forget(row.id)
             return {"ok": True}
@@ -235,7 +237,7 @@ class Runtime:
         user_id: str,
         session_id: str,
         incoming: Msg,
-        clients: dict[str, Any] | None = None,
+        clients: dict[str, Any],
     ) -> ChatTriggerResponse:
         """刷新角色配置并提交原生消息；与删除、改名及运行控制串行。"""
         async with self._lock:
@@ -247,55 +249,43 @@ class Runtime:
             await self._storage.upsert_session(
                 user_id, row.agent_id, row.config, session_id=row.id
             )
-            return await self._runs.start(user_id, row, incoming, clients or {})
+            return await self._runs.start(user_id, row, incoming, clients)
 
     async def interrupt(
-        self, user_id: str, session_id: str, clients: dict[str, Any] | None = None
+        self, user_id: str, session_id: str, clients: dict[str, Any]
     ) -> dict[str, bool]:
-        """停止整个团队，保留可恢复上下文。"""
+        """请求中断当前回复，保留后台工具和成员 Agent 的运行。"""
         async with self._lock:
             row = await self._get_session(user_id, session_id)
-            return await self._runs.stop(
-                user_id, row, clients or {}, intent="interrupted"
-            )
+            return await self._runs.interrupt(user_id, row, clients)
 
     async def cancel(
-        self, user_id: str, session_id: str, clients: dict[str, Any] | None = None
+        self, user_id: str, session_id: str, clients: dict[str, Any]
     ) -> dict[str, bool]:
-        """取消任务并解散团队，保留主会话历史。"""
+        """取消当前会话的回复及后台工具，保留上下文和团队。"""
         async with self._lock:
             row = await self._get_session(user_id, session_id)
-            return await self._runs.stop(
-                user_id, row, clients or {}, intent="cancelled"
-            )
+            return await self._runs.cancel(user_id, row, clients)
 
     async def resume(
-        self, user_id: str, session_id: str, clients: dict[str, Any] | None = None
+        self, user_id: str, session_id: str, clients: dict[str, Any]
     ) -> ChatTriggerResponse:
-        """使用保存的上下文恢复整个任务。"""
+        """使用保存的上下文继续当前会话。"""
         async with self._lock:
             row = await self._get_session(user_id, session_id)
-            return await self._runs.resume(user_id, row, clients or {})
+            return await self._runs.resume(user_id, row, clients)
 
     async def confirm(
         self,
         user_id: str,
         session_id: str,
         event: UserConfirmResultEvent,
-        clients: dict[str, Any] | None = None,
+        clients: dict[str, Any],
     ) -> ChatTriggerResponse:
         """校验并提交框架原生权限确认。"""
         async with self._lock:
             row = await self._get_session(user_id, session_id)
-            return await self._runs.confirm(user_id, row, event, clients or {})
-
-    async def wait(self, user_id: str, session_id: str) -> None:
-        """等待当前主会话执行结束；不代表团队或后台工具全部结束。"""
-        async with self._lock:
-            row = await self._get_session(user_id, session_id)
-            task = self._run_registry.get(row.id)
-        if task is not None:
-            await asyncio.shield(task)
+            return await self._runs.confirm(user_id, row, event, clients)
 
     async def subscribe(self, user_id: str, session_id: str) -> StreamingResponse:
         """校验归属并返回原生 SSE 响应，交由宿主 HTTP 服务消费。"""

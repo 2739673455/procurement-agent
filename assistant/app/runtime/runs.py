@@ -1,41 +1,37 @@
-"""通用任务控制；执行、工具收尾、状态保存与事件发布均复用 AgentScope。"""
+"""会话运行控制；中断、取消和续跑遵循 AgentScope 原生语义。"""
 
 import asyncio
 from typing import Any
-from weakref import WeakValueDictionary
 
 from agentscope.app._manager import ChatRunRegistry
 from agentscope.app._router._schema import ChatTriggerResponse
 from agentscope.app._service import ChatService, SessionService, SessionStatus
-from agentscope.app.message_bus import MessageBus, MessageBusKeys
 from agentscope.app.storage import SessionRecord, StorageBase
-from agentscope.event import UserConfirmResultEvent, UserInterruptEvent
+from agentscope.event import UserConfirmResultEvent
 from agentscope.message import Msg, ToolCallState
 from agentscope.types import ReplyFinishedReason
 from starlette.datastructures import State
 
-from .context import CONTROL_KEY, ContextRegistry, RunIntent
+from .context import ContextRegistry
 from .errors import RunError
 from .models import ModelClients
 from .teams import TeamService
 
-type RunInput = Msg | UserConfirmResultEvent | UserInterruptEvent | None
+type RunInput = Msg | UserConfirmResultEvent | None
 
 
 class RunController:
-    """协调会话的用户业务客户端、框架后台运行以及整个 Agent 团队的中断和取消。"""
+    """在 Runtime 入口锁内绑定业务客户端，通过框架控制当前会话。"""
 
     def __init__(self, runtime: State, teams: TeamService) -> None:
-        """绑定框架服务、上下文提供器和 Agent 团队范围解析器。"""
+        """绑定框架服务、业务上下文和权限请求的团队归属查询。"""
         self._storage: StorageBase = runtime.storage
         self._contexts: ContextRegistry = runtime.contexts
         self._teams = teams
-        self._locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         self._model_clients: ModelClients = runtime.model_clients
         self._chat_service: ChatService = runtime.chat_service
         self._session_service: SessionService = runtime.session_service
         self._run_registry: ChatRunRegistry = runtime.chat_run_registry
-        self._message_bus: MessageBus = runtime.message_bus
 
     async def _invoke(
         self, user_id: str, row: SessionRecord, incoming: RunInput
@@ -56,20 +52,13 @@ class RunController:
             raise RunError("当前会话正在执行。", "conflict") from None
 
     async def require_idle(self, user_id: str, row: SessionRecord) -> None:
-        """使用框架状态及待启动任务检查整个任务范围是否空闲。"""
-        if (await self._teams.summary(user_id, row))["running"]:
-            raise RunError("当前任务正在执行。", "conflict")
-
-    async def _activate(
-        self, user_id: str, root: SessionRecord, clients: dict[str, Any]
-    ) -> None:
-        """绑定本次请求的用户业务客户端，并持久清除 Agent 团队的中断意图。"""
-        self._contexts.bind(user_id, root.id, clients)
-        for row in await self._teams.scope(user_id, root):
-            row.state.middle_context[CONTROL_KEY] = "active"
-            await self._storage.update_session_state(
-                user_id, row.agent_id, row.id, row.state
-            )
+        """检查当前回复是否正在运行，成员和后台工具不阻止新一轮输入。"""
+        status = await self._session_service.get_session_status(
+            user_id, row.agent_id, row.id
+        )
+        task = self._run_registry.get(row.id)
+        if status == SessionStatus.RUNNING or (task is not None and not task.done()):
+            raise RunError("当前会话正在执行。", "conflict")
 
     async def start(
         self,
@@ -79,31 +68,33 @@ class RunController:
         clients: dict[str, Any],
     ) -> ChatTriggerResponse:
         """启动新的用户输入，保留同一会话已经保存的对话上下文。"""
-        async with self._locks.setdefault(root.id, asyncio.Lock()):
-            root = await self._contexts.root(user_id, root.id)
-            await self.require_idle(user_id, root)
-            summary = await self._teams.summary(user_id, root)
-            if summary["confirmations"]:
-                raise RunError("请先处理工具确认，或取消当前任务。", "conflict")
-            await self._activate(user_id, root, clients)
-            self._spawn(user_id, root, incoming)
-            return ChatTriggerResponse(session_id=root.id)
+        root = await self._contexts.root(user_id, root.id)
+        await self.require_idle(user_id, root)
+        status = await self._session_service.get_session_status(
+            user_id, root.agent_id, root.id
+        )
+        if status in {
+            SessionStatus.AWAITING_PERMISSION,
+            SessionStatus.AWAITING_EXTERNAL_RESULT,
+        }:
+            raise RunError("请先处理当前会话的工具请求，或中断当前回复。", "conflict")
+        self._contexts.bind(user_id, root.id, clients)
+        self._spawn(user_id, root, incoming)
+        return ChatTriggerResponse(session_id=root.id)
 
     async def resumable(self, user_id: str, root: SessionRecord) -> bool:
-        """依据框架上下文、回复终态和持久意图判断是否可以无新消息续跑。"""
+        """依据原生上下文、会话状态和回复结束原因判断是否展示续跑入口。"""
         root = await self._contexts.root(user_id, root.id)
-        if (
-            root.state.middle_context.get(CONTROL_KEY) == "cancelled"
-            or not root.state.context
-        ):
+        if not root.state.context:
             return False
         status = await self._session_service.get_session_status(
             user_id, root.agent_id, root.id
         )
-        if status != SessionStatus.IDLE:
+        task = self._run_registry.get(root.id)
+        if status != SessionStatus.IDLE or (task is not None and not task.done()):
             return False
         history, _ = await self._storage.list_messages(user_id, root.id, limit=1)
-        return root.state.middle_context.get(CONTROL_KEY) == "interrupted" or bool(
+        return bool(
             history
             and history[-1].finished_reason
             in {
@@ -116,131 +107,31 @@ class RunController:
     async def resume(
         self, user_id: str, root: SessionRecord, clients: dict[str, Any]
     ) -> ChatTriggerResponse:
-        """加载已保存的上下文继续执行，并恢复中断的成员 Agent。"""
-        async with self._locks.setdefault(root.id, asyncio.Lock()):
-            root = await self._contexts.root(user_id, root.id)
-            await self.require_idle(user_id, root)
-            if not await self.resumable(user_id, root):
-                raise RunError("当前任务没有可恢复的中断上下文。", "conflict")
-            rows = await self._teams.scope(user_id, root)
-            await self._activate(user_id, root, clients)
-            for row in rows[1:]:
-                history, _ = await self._storage.list_messages(user_id, row.id, limit=1)
-                if history and history[-1].finished_reason in {
-                    ReplyFinishedReason.INTERRUPTED,
-                    ReplyFinishedReason.ERROR,
-                    ReplyFinishedReason.EXCEED_MAX_ITERS,
-                }:
-                    self._spawn(user_id, row, None)
-            self._spawn(user_id, root, None)
-            return ChatTriggerResponse(session_id=root.id)
+        """通过原生空输入继续当前会话，成员 Agent 由框架独立调度。"""
+        root = await self._contexts.root(user_id, root.id)
+        await self.require_idle(user_id, root)
+        if not await self.resumable(user_id, root):
+            raise RunError("当前会话没有可恢复的上下文。", "conflict")
+        self._contexts.bind(user_id, root.id, clients)
+        self._spawn(user_id, root, None)
+        return ChatTriggerResponse(session_id=root.id)
 
-    async def stop(
-        self,
-        user_id: str,
-        root: SessionRecord,
-        clients: dict[str, Any],
-        *,
-        intent: RunIntent,
+    async def interrupt(
+        self, user_id: str, row: SessionRecord, clients: dict[str, Any]
     ) -> dict[str, bool]:
-        """停止负责人 Agent 及成员 Agent，等待框架保存状态；取消同时解散 Agent 团队。"""
-        async with self._locks.setdefault(root.id, asyncio.Lock()):
-            root = await self._contexts.root(user_id, root.id)
-            self._contexts.bind(user_id, root.id, clients)
-            self._contexts.block(root.id, intent)
-            rows = await self._teams.scope(user_id, root)
-            pending = rows
-            stopped: set[str] = set()
-            while pending:
-                session_ids = {row.id for row in pending}
-                tasks = {
-                    task
-                    for row in pending
-                    if (task := self._run_registry.get(row.id)) is not None
-                }
-                results = await asyncio.gather(
-                    *(
-                        self._session_service.cancel_session_run(row.id)
-                        for row in pending
-                    )
-                )
-                if not all(results):
-                    raise RunError(
-                        "任务停止超时，请重新读取状态后重试。", "unavailable"
-                    )
-                if tasks:
-                    _, unfinished = await asyncio.wait(tasks, timeout=10)
-                    if unfinished:
-                        raise RunError(
-                            "任务停止超时，请重新读取状态后重试。", "unavailable"
-                        )
-                try:
-                    async with asyncio.timeout(10):
-                        while any(
-                            await asyncio.gather(
-                                *(
-                                    self._message_bus.registry_getall(
-                                        MessageBusKeys.bg_tasks(session_id)
-                                    )
-                                    for session_id in session_ids
-                                )
-                            )
-                        ):
-                            await asyncio.sleep(0.05)
-                except TimeoutError:
-                    raise RunError(
-                        "后台工具停止超时，请重新读取状态后重试。", "unavailable"
-                    ) from None
-                stopped.update(row.id for row in pending)
-                # 负责人 Agent 停止后重新读取团队，覆盖执行期间加入的成员 Agent。
-                rows = await self._teams.scope(user_id, root)
-                pending = [row for row in rows if row.id not in stopped]
-            for original in rows:
-                row = await self._storage.get_session(
-                    user_id, original.agent_id, original.id
-                )
-                if row is None:
-                    continue
-                status = await self._session_service.get_session_status(
-                    user_id, row.agent_id, row.id
-                )
-                if status in {
-                    SessionStatus.AWAITING_PERMISSION,
-                    SessionStatus.AWAITING_EXTERNAL_RESULT,
-                }:
-                    task = self._spawn(
-                        user_id, row, UserInterruptEvent(reply_id=row.state.reply_id)
-                    )
-                    await asyncio.wait_for(task, timeout=10)
-                    row = await self._storage.get_session(user_id, row.agent_id, row.id)
-                    if row is None:
-                        continue
-                row.state.middle_context[CONTROL_KEY] = intent
-                await self._storage.update_session_state(
-                    user_id, row.agent_id, row.id, row.state
-                )
-            latest_root = await self._storage.get_session(
-                user_id, root.agent_id, root.id
-            )
-            if (
-                intent == "cancelled"
-                and latest_root is not None
-                and latest_root.team_id
-            ):
-                await self._session_service.delete_team(user_id, latest_root.team_id)
-            # 工具退出会触发框架投递收尾提示，等待这些唤醒保存上下文。
-            while tasks := {
-                task
-                for row in rows
-                if (task := self._run_registry.get(row.id)) is not None
-                and not task.done()
-            }:
-                _, unfinished = await asyncio.wait(tasks, timeout=10)
-                if unfinished:
-                    raise RunError(
-                        "任务停止超时，请重新读取状态后重试。", "unavailable"
-                    )
-            return {"ok": True}
+        """提交原生中断请求，保留后台工具，由框架异步收尾当前回复。"""
+        self._contexts.bind(user_id, row.id, clients)
+        await self._chat_service.interrupt(user_id, row.id, row.agent_id)
+        return {"ok": True}
+
+    async def cancel(
+        self, user_id: str, row: SessionRecord, clients: dict[str, Any]
+    ) -> dict[str, bool]:
+        """取消当前会话的回复及后台工具，保留上下文和团队。"""
+        self._contexts.bind(user_id, row.id, clients)
+        if not await self._session_service.cancel_session_run(row.id):
+            raise RunError("会话停止超时，请重新读取状态后重试。", "unavailable")
+        return {"ok": True}
 
     async def confirm(
         self,
@@ -250,46 +141,40 @@ class RunController:
         clients: dict[str, Any],
     ) -> ChatTriggerResponse:
         """校验原生确认事件的归属，使用持久化调用信息恢复对应 Agent 会话。"""
-        async with self._locks.setdefault(root.id, asyncio.Lock()):
-            root = await self._contexts.root(user_id, root.id)
-            if root.state.middle_context.get(CONTROL_KEY) in {
-                "interrupted",
-                "cancelled",
-            }:
-                raise RunError("请先恢复已中断的任务。", "conflict")
-            for row in await self._teams.scope(user_id, root):
-                if row.state.reply_id != event.reply_id:
-                    continue
-                status = await self._session_service.get_session_status(
-                    user_id, row.agent_id, row.id
-                )
-                task = self._run_registry.get(row.id)
-                if status != SessionStatus.AWAITING_PERMISSION or (
-                    task is not None and not task.done()
-                ):
-                    raise RunError("工具确认已失效或正在处理。", "conflict")
-                agent = await self._storage.get_agent(user_id, row.agent_id)
-                if agent is None:
-                    break
-                calls = {
-                    call.id: call
-                    for call in row.state.get_awaiting_tool_calls(agent.data.name)
-                    if call.state == ToolCallState.ASKING
+        root = await self._contexts.root(user_id, root.id)
+        for row in await self._teams.scope(user_id, root):
+            if row.state.reply_id != event.reply_id:
+                continue
+            status = await self._session_service.get_session_status(
+                user_id, row.agent_id, row.id
+            )
+            task = self._run_registry.get(row.id)
+            if status != SessionStatus.AWAITING_PERMISSION or (
+                task is not None and not task.done()
+            ):
+                raise RunError("工具确认已失效或正在处理。", "conflict")
+            agent = await self._storage.get_agent(user_id, row.agent_id)
+            if agent is None:
+                break
+            calls = {
+                call.id: call
+                for call in row.state.get_awaiting_tool_calls(agent.data.name)
+                if call.state == ToolCallState.ASKING
+            }
+            ids = [result.tool_call.id for result in event.confirm_results]
+            if not ids or len(ids) != len(set(ids)) or set(ids) - calls.keys():
+                raise RunError("工具确认已失效或不属于当前任务。", "conflict")
+            event = event.model_copy(
+                update={
+                    "confirm_results": [
+                        result.model_copy(
+                            update={"tool_call": calls[result.tool_call.id]}
+                        )
+                        for result in event.confirm_results
+                    ]
                 }
-                ids = [result.tool_call.id for result in event.confirm_results]
-                if not ids or len(ids) != len(set(ids)) or set(ids) - calls.keys():
-                    raise RunError("工具确认已失效或不属于当前任务。", "conflict")
-                event = event.model_copy(
-                    update={
-                        "confirm_results": [
-                            result.model_copy(
-                                update={"tool_call": calls[result.tool_call.id]}
-                            )
-                            for result in event.confirm_results
-                        ]
-                    }
-                )
-                self._contexts.bind(user_id, root.id, clients)
-                self._spawn(user_id, row, event)
-                return ChatTriggerResponse(session_id=root.id)
-            raise RunError("工具确认已失效或不属于当前任务。", "conflict")
+            )
+            self._contexts.bind(user_id, root.id, clients)
+            self._spawn(user_id, row, event)
+            return ChatTriggerResponse(session_id=root.id)
+        raise RunError("工具确认已失效或不属于当前任务。", "conflict")

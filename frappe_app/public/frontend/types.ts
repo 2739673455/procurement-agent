@@ -28,7 +28,6 @@ export interface History {
 	running: boolean;
 	resumable: boolean;
 	status: string;
-	intent: string;
 	members: TeamMember[];
 	confirmations: RequireUserConfirmEvent[];
 	background_tasks: Record<string, BackgroundTool>;
@@ -36,6 +35,7 @@ export interface History {
 /** 框架后台工具注册表中的任务信息。 */
 export interface BackgroundTool {
 	tool_name: string;
+	session_id: string;
 	agent_id: string;
 	started_at: number;
 }
