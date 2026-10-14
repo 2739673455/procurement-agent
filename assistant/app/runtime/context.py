@@ -11,25 +11,25 @@ from .errors import RunError
 
 @dataclass
 class RunContext:
-    """一次会话运行使用的用户和业务客户端。"""
+    """负责人会话及其成员共享的用户身份和业务客户端绑定。"""
 
     user_id: str  # 框架内的用户标识，用于检查会话归属。
     root_session_id: str  # 用户主会话 ID；成员 Agent 使用负责人 Agent 会话的 ID。
     clients: dict[str, Any] = field(repr=False)  # 携带用户凭据的业务客户端。
-    bound_at: float = field(default_factory=monotonic)  # 绑定时间，用于检查有效期。
+    bound_at: float = field(default_factory=monotonic)  # 单调时钟读数，用于检查有效期。
 
 
 class ContextRegistry:
-    """按负责人 Agent 的会话保存上下文，检查用户归属及客户端有效期。"""
+    """按负责人会话保存客户端绑定，检查用户归属及绑定有效期。"""
 
     def __init__(self, storage: StorageBase, ttl_seconds: float) -> None:
-        """保存框架存储引用和客户端有效期。"""
+        """保存框架存储引用和客户端绑定有效期。"""
         self._storage = storage
         self._ttl_seconds = ttl_seconds
         self._contexts: dict[str, RunContext] = {}
 
     def bind(self, user_id: str, root_session_id: str, clients: dict[str, Any]) -> None:
-        """保存本次请求提供的用户和业务客户端。"""
+        """清理过期绑定，保存本次请求的用户和业务客户端。"""
         now = monotonic()
         for identifier, context in list(self._contexts.items()):
             if now - context.bound_at > self._ttl_seconds:
@@ -41,7 +41,7 @@ class ContextRegistry:
         self._contexts.pop(root_session_id, None)
 
     def clear(self) -> None:
-        """释放全部内存上下文。"""
+        """清除全部客户端绑定，客户端的关闭由宿主负责。"""
         self._contexts.clear()
 
     async def root(self, user_id: str, session_id: str) -> SessionRecord:

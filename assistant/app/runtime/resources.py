@@ -27,7 +27,7 @@ async def equip_resources(
     definition: AgentDefinition,
 ) -> None:
     """按角色装配资源，安装记录、连接和操作锁由框架管理。"""
-    # list_mcps 会建立连接；直接读取框架声明，避免中断收尾重连 MCP。
+    # _declared_specs 只读取配置声明；list_mcps 会建立 MCP 连接。
     current = {
         client.name: client
         for client in workspace._declared_specs(agent_id, session_id)
@@ -95,7 +95,7 @@ class RoleMiddleware(MiddlewareBase):
         input_kwargs: dict[str, Any],
         next_handler: Callable[..., AsyncGenerator[AgentEvent | Msg]],
     ) -> AsyncGenerator[AgentEvent | Msg]:
-        """在执行前收敛能力范围；工具执行与权限判断仍由框架负责。"""
+        """按角色筛选工具、Skill、MCP 和 AgentInvite 的可邀请成员。"""
         allowed = (
             set(self._definition.builtin_tools)
             | {tool.name for tool in self._business_tools}

@@ -53,7 +53,9 @@ class Model(ChatModelBase):
         self.calls = calls
         self.entered = entered
         self.client = SimpleNamespace(close=AsyncMock())
-        self.client.with_options = Mock(return_value=SimpleNamespace(close=AsyncMock()))
+        self.client.with_options = Mock(
+            return_value=SimpleNamespace(close=self.client.close)
+        )
         self.inputs: list[list[Msg]] = []
         self.tools: list[dict[str, Any]] | None = []
 
@@ -140,7 +142,7 @@ async def command(
 
 
 async def wait_for_idle(runtime: Runtime, user_id: str, session_id: str) -> None:
-    """测试通过真实会话状态等待当前回复收尾，不向生产接口增加等待方法。"""
+    """轮询 Runtime 会话状态，等待当前回复结束。"""
     async with asyncio.timeout(10):
         while (await runtime.messages(user_id, session_id))["running"]:
             await asyncio.sleep(0.01)
@@ -616,7 +618,7 @@ def test_background_tool_state_delivery_and_stop(
     initialize = ToolOffloadMiddleware.__init__
 
     def initialize_fast(self: ToolOffloadMiddleware, *args: Any, **kwargs: Any) -> None:
-        """缩短框架等待时间，仍经过真实后台转移和消息投递。"""
+        """使用较短的等待时间执行框架后台转移和消息投递。"""
         initialize(self, *args, **kwargs, timeout_secs=0.05)
 
     monkeypatch.setattr(ToolOffloadMiddleware, "__init__", initialize_fast)
@@ -707,7 +709,7 @@ def test_background_tool_state_delivery_and_stop(
             else:
                 release.set()
 
-            # Toolkit 取消收尾也会产生原生结果；不再拦截框架的后续唤醒。
+            # 后台工具的正常结果和取消结果都会通过消息投递唤醒会话。
             async with asyncio.timeout(5):
                 while True:
                     history = await command(service, "messages", identifier)

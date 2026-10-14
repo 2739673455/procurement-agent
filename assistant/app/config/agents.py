@@ -1,4 +1,4 @@
-"""加载 Agent 和模型配置。"""
+"""读取 agents.yaml，解析为 Runtime 的模型和角色配置。"""
 
 from app.config.loader import CONFIG_DIR, load_yaml
 from app.runtime.config import AgentDefinitions

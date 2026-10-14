@@ -28,7 +28,7 @@ class AgentRegistry:
 
     @staticmethod
     def reference_session_id(user_id: str, key: str) -> str:
-        """标识原生 AgentInvite 工具读取成员 Agent 模型和工作空间配置的参考会话。"""
+        """生成角色参考会话 ID，供 AgentInvite 读取成员的模型和工作空间配置。"""
         return str(uuid5(NAMESPACE_URL, f"agent-reference:{user_id}:{key}"))
 
     async def configure_user(self, user_id: str) -> dict[str, ChatModelConfig]:

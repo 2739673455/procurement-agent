@@ -62,7 +62,7 @@ flowchart LR
 flowchart TB
     runtime["runtime.py<br/>会话入口"]
     runs["runs.py<br/>运行控制"]
-    agents["agents.py<br/>Agent 与模型引用登记"]
+    agents["agents.py<br/>角色、凭据与模型参数登记"]
     resources["resources.py<br/>角色工具、MCP 与 Skill 装配"]
     catalog["catalog.py<br/>能力目录与工具工厂"]
     models["models.py<br/>运行设置与客户端释放"]
@@ -82,7 +82,7 @@ flowchart TB
     workspaces --> errors
 ```
 
-`config.py`、`errors.py`、`teams.py`、`offloading.py` 没有包内导入；`offloading.py` 补齐前台工具被中断时的取消收尾。图中省略第三方库和按配置动态加载的业务工具。
+`config.py`、`errors.py`、`teams.py`、`offloading.py` 没有包内导入；`offloading.py` 负责前台工具被中断时的取消收尾。图中省略第三方库和按配置动态加载的业务工具。
 
 迁移时整包复制，依赖 `agentscope[service,storage-sql]>=2.0.9,<2.1`、FastAPI 和 Pydantic；Docker 工作空间另需 `workspace-docker` 扩展。部分装配使用 AgentScope 内部 API。宿主提供 `AgentCatalog`、原生存储、消息总线、工作空间管理器、`InjectionConfig` 和上下文有效期，通过 `create_runtime()` 创建实例，以 `async with runtime` 管理生命周期。
 

@@ -55,7 +55,7 @@ class Runtime:
     """单次 async with 生命周期内使用的通用会话与运行 API。
 
     user_id 由宿主认证后提供；clients 由宿主管理生命周期，仅保存在内存中。
-    返回框架原生消息/事件，未公开原生 HTTP 路由或 app.state。
+    会话读取返回原生消息与状态快照，事件订阅返回原生 SSE 响应。
     """
 
     def __init__(
@@ -152,7 +152,7 @@ class Runtime:
     async def create(
         self, user_id: str, *, agent: str | None = None, title: str = "新对话"
     ) -> SessionRecord:
-        """创建默认入口 Agent 的会话，并为原生 AgentInvite 工具登记成员 Agent 模型配置。"""
+        """登记用户模型和角色，创建指定角色或默认角色的会话。"""
         async with self._lock:
             self._require_open()
             key = agent if agent is not None else self.catalog.definitions.default
@@ -208,7 +208,7 @@ class Runtime:
     async def rename(
         self, user_id: str, session_id: str, title: str
     ) -> dict[str, bool]:
-        """修改当前会话空闲时的标题。"""
+        """在当前回复未运行时修改会话标题。"""
         async with self._lock:
             row = await self._get_session(user_id, session_id)
             if not title.strip():

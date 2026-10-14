@@ -9,7 +9,7 @@ server:
   port: 8100 # HTTP 服务监听端口。
 
 # AgentScope 原生 SQL 存储：会话、AgentState、完整消息、模型参数及提供商凭据。
-# 框架启动时创建缺失的数据表；密钥从环境变量读取，支持通过 .env 配置。
+# 框架启动时创建缺失的数据表，数据库密码从环境变量或 .env 读取。
 postgresql:
   host: "127.0.0.1" # 数据库主机地址。
   port: 5433 # 数据库连接端口。
@@ -34,4 +34,4 @@ workspace:
 # 所有角色共用的运行配置。
 runtime:
   timezone: Asia/Shanghai # 提示词中时间信息使用的时区。
-  context_ttl_seconds: 3600 # 登录上下文有效期；恢复或发送时重新核验并绑定。
+  context_ttl_seconds: 3600 # 内存中业务客户端绑定的有效期，单位为秒。

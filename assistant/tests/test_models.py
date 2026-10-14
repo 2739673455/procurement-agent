@@ -2,6 +2,7 @@ import asyncio
 import json
 from collections.abc import Callable
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -26,6 +27,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.config.agents import cfg
 from app.runtime.config import AgentDefinitions, ModelConfig
+from app.runtime.models import ModelClients
 
 type ModelFactory = Callable[[dict[str, Any] | None], DeepSeekChatModel]
 
@@ -129,6 +131,44 @@ def test_agent_requires_declared_model(reference: str | None) -> None:
     config["agents"][cfg.default]["model"] = reference
     with pytest.raises(ValidationError, match="model|未知模型"):
         AgentDefinitions.model_validate(config)
+
+
+@pytest.mark.parametrize("options", ["empty", "shared", "invalid"])
+def test_model_clients_close_each_http_resource_once(
+    make_model: ModelFactory, monkeypatch: pytest.MonkeyPatch, options: str
+) -> None:
+    """SDK 配置成功和失败均只关闭一次底层 HTTP 客户端。"""
+
+    async def scenario() -> None:
+        model = make_model(None)
+        original = model.client
+        http_client = original._client
+        close = AsyncMock(wraps=http_client.aclose)
+        monkeypatch.setattr(http_client, "aclose", close)
+        client_kwargs: dict[str, Any] = {}
+        if options == "shared":
+            client_kwargs = {"timeout": 15, "max_retries": 2}
+        elif options == "invalid":
+            client_kwargs = {"unknown_option": True}
+        settings = cfg.models[cfg.agents[cfg.default].model].model_copy(
+            update={"client_kwargs": client_kwargs}
+        )
+        clients = ModelClients()
+        try:
+            if options == "invalid":
+                with pytest.raises(TypeError):
+                    clients.configure(model, settings)
+                assert model.client is original
+            else:
+                clients.configure(model, settings)
+                assert model.client._client is http_client
+                assert not model.client.is_closed()
+        finally:
+            await clients.close()
+        close.assert_awaited_once()
+        assert original.is_closed() and model.client.is_closed()
+
+    asyncio.run(scenario())
 
 
 def chunk(delta: dict[str, Any], finish_reason: str | None = None) -> dict[str, Any]:

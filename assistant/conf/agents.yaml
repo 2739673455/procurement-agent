@@ -1,4 +1,4 @@
-# 初始化原生凭据和模型参数，由各 Agent 的 model 引用。
+# 模型配置包含提供商凭据、生成参数和运行设置，角色通过 model 引用配置名。
 models:
   # DeepSeek 官方接口的模型配置。
   deepseek-deepseek-flash:
@@ -11,7 +11,7 @@ models:
       timeout: 30 # 请求超时，单位为秒。
       max_retries: 0 # SDK 重试次数；模型层不额外重试。
     image_inputs: true # 是否允许向模型发送图片附件。
-    context_size: 1048576 # 显式上下文 token 预算，覆盖原生模型卡和默认值。
+    context_size: 1048576 # 上下文压缩使用的 token 预算，覆盖模型卡及默认值。
     params: {} # 原生模型 Parameters 字段，例如 thinking_enable、reasoning_effort、max_tokens。
 
 # 默认对话入口及预定义角色，能力引用由服务启动时验证。

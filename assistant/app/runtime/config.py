@@ -1,4 +1,4 @@
-"""Agent 能力与模型配置；解析和引用校验不依赖配置文件格式。"""
+"""Runtime 的模型配置、角色定义和引用校验。"""
 
 from typing import Any, Self
 
@@ -8,19 +8,19 @@ from pydantic import BaseModel, Field, SerializeAsAny, model_validator
 
 
 class ModelConfig(BaseModel):
-    """原生凭据、生成参数，以及宿主显式指定的模型运行设置。"""
+    """提供商凭据、原生生成参数和模型运行设置。"""
 
-    credential: SerializeAsAny[CredentialBase]  # 原生凭据；type 决定模型类和消息格式。
-    model: str = Field(min_length=1)  # 服务商的模型标识，不可为空。
-    client_kwargs: dict[str, Any]  # 通过 SDK 的 with_options 设置连接选项。
-    image_inputs: bool  # 是否允许向模型发送图片附件。
-    context_size: int = Field(gt=0)  # 显式上下文预算，覆盖模型卡或构造器默认值。
-    params: SerializeAsAny[BaseModel]  # 加载时解析为对应模型的原生 Parameters 对象。
+    credential: SerializeAsAny[CredentialBase]  # 提供商原生凭据；type 决定模型类。
+    model: str = Field(min_length=1)  # 提供商接口中的模型标识。
+    client_kwargs: dict[str, Any]  # SDK 的 with_options 参数，如 timeout、max_retries。
+    image_inputs: bool  # 图片输入开关，用于附件组装和模型消息格式校验。
+    context_size: int = Field(gt=0)  # 上下文压缩使用的 token 预算，覆盖模型卡及默认值。
+    params: SerializeAsAny[BaseModel]  # 与提供商模型对应的原生 Parameters 对象。
 
     @model_validator(mode="before")
     @classmethod
     def _parse_model(cls, value: dict[str, Any]) -> dict[str, Any]:
-        """先解析原生凭据，再按凭据指定的模型类型解析参数。"""
+        """根据凭据类型解析提供商凭据及生成参数。"""
         credential = CredentialFactory.from_dict(value.get("credential", {}))
         model_cls = credential.get_chat_model_class()
         return {
@@ -31,27 +31,27 @@ class ModelConfig(BaseModel):
 
 
 class AgentDefinition(BaseModel):
-    """Agent 能力声明；上下文和推理参数使用框架原生配置。"""
+    """角色名称、资源、模型引用及 AgentScope 推理配置。"""
 
     name: str = Field(min_length=1)  # Agent 名称。
-    description: str = Field(min_length=1)  # Agent 能力说明，供协作时选用。
-    prompt: str  # 相对于资源基目录的提示词文件。
+    description: str = Field(min_length=1)  # 供团队邀请时选择角色的能力说明。
+    prompt: str  # 提示词文件路径，相对于 AgentCatalog.base_dir。
     model: str = Field(min_length=1)  # models 中的模型配置名。
     builtin_tools: list[str]  # 启用的框架工作空间工具。
-    tool_factories: list[str]  # 工厂函数路径，格式为 Python模块:函数名。
-    mcps: list[str]  # MCP 客户端配置名。
-    skills: list[str]  # Skill 根目录下的目录名称。
-    members: list[str]  # 允许邀请加入团队的其他 Agent 的配置名。
+    tool_factories: list[str]  # 业务工具工厂路径，格式为 Python模块:函数名。
+    mcps: list[str]  # AgentCatalog.mcps 中的服务配置名。
+    skills: list[str]  # AgentCatalog.skills_dir 下的 Skill 目录名。
+    members: list[str]  # 可通过 AgentInvite 邀请的角色配置名。
     context: ContextConfig  # 框架上下文配置。
     react: ReActConfig  # 框架推理循环配置。
 
 
 class AgentDefinitions(BaseModel):
-    """预定义 Agent、可用模型与默认入口。"""
+    """模型和角色配置集合，以及默认入口角色。"""
 
     default: str  # 默认入口 Agent 的配置名。
     agents: dict[str, AgentDefinition]  # Agent 配置名到定义的映射。
-    models: dict[str, ModelConfig]  # 模型配置名到连接参数和能力声明的映射。
+    models: dict[str, ModelConfig]  # 模型配置名到凭据、生成参数及运行设置的映射。
 
     @model_validator(mode="after")
     def _validate_references(self) -> Self:

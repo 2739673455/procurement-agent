@@ -22,7 +22,7 @@ class ServerConfig(BaseModel):
 
 
 class PostgresConfig(BaseModel):
-    """AgentScope 存储会话、消息和状态所用的 PostgreSQL 连接。"""
+    """AgentScope 持久化会话、消息、状态和模型凭据的 PostgreSQL 连接。"""
 
     host: str = Field(min_length=1)  # 数据库主机地址。
     port: int = Field(ge=1, le=65535)  # 数据库连接端口。
@@ -50,10 +50,10 @@ class DockerWorkspaceConfig(BaseModel):
 
 
 class RuntimeConfig(BaseModel):
-    """所有角色共用的提示词时区及任务登录上下文有效期。"""
+    """所有角色共用的提示词时区及业务客户端绑定有效期。"""
 
     timezone: str = Field(min_length=1)  # 提示词注入使用的 IANA 时区。
-    context_ttl_seconds: float = Field(gt=0)  # 服务端内存中的任务登录上下文有效期。
+    context_ttl_seconds: float = Field(gt=0)  # 内存中业务客户端绑定的有效期，单位为秒。
 
 
 class AppConfig(BaseModel):

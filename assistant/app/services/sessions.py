@@ -1,4 +1,4 @@
-"""认证用户的会话入口；Agent 角色、运行与 Agent 团队控制由各自服务组织。"""
+"""将已认证的 ERPNext 请求适配为 Runtime 会话操作。"""
 
 from __future__ import annotations
 
@@ -149,7 +149,7 @@ class SessionService:
         attachments: list[str],
         erp: ERPNext,
     ) -> ChatTriggerResponse:
-        """装配用户输入和角色配置，通过运行服务启动框架任务。"""
+        """按角色的图片输入设置组装消息，绑定 ERPNext 客户端并启动回复。"""
         async with self._lock:
             user_id, row = await self._get_session(owner, session_id)
             if not message.strip():

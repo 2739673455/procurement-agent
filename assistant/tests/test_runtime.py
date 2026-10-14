@@ -125,7 +125,7 @@ def test_native_permission_confirmation_and_parked_interrupt(
             state = await command(service, "messages", identifier)
             assert state["status"] == SessionStatus.AWAITING_PERMISSION
             request = state["confirmations"][0]
-            # 浏览器的参数不能覆盖数据库中已经审核的工具调用。
+            # 工具执行参数以持久化调用为准，忽略浏览器回传的参数改动。
             forged = request.tool_calls[0].model_copy(
                 update={"input": '{"filters":[["item_code","=","forged"]]}'}
             )
@@ -133,7 +133,7 @@ def test_native_permission_confirmation_and_parked_interrupt(
                 reply_id=request.reply_id,
                 confirm_results=[ConfirmResult(confirmed=True, tool_call=forged)],
             )
-            # 原生取消不会关闭停放的权限请求；确认仍然可以继续原回复。
+            # 取消后，等待权限确认的调用可通过确认操作继续执行。
             await command(service, "cancel", identifier)
             assert (await command(service, "messages", identifier))[
                 "status"

@@ -43,10 +43,10 @@ def create_runtime(
         """接入模型客户端释放、注入配置和工具取消收尾。"""
 
         def __init__(self, **kwargs: Any) -> None:
-            """登记原生模型客户端，并为框架工具补齐取消收尾。"""
+            """应用模型运行设置，注册客户端释放和工具取消处理。"""
             for model in (kwargs["model"], kwargs["model_config"].fallback_model):
                 if model is not None:
-                    # 初始化时将原生凭据 name 设为模型配置名，仅用于关联宿主运行设置。
+                    # 凭据 name 对应模型配置名，用于查找运行设置。
                     settings = catalog.definitions.models[model.credential.name]
                     model_clients.configure(model, settings)
             kwargs["middlewares"] = [

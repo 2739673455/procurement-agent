@@ -23,7 +23,7 @@ class ToolExecutionMiddleware(MiddlewareBase):
         input_kwargs: dict[str, Any],
         next_handler: Callable[..., AsyncGenerator[ToolChunk | ToolResponse]],
     ) -> AsyncGenerator[ToolChunk | ToolResponse]:
-        """后台转移和结果投递沿用框架；取消时等待内部工具任务退出。"""
+        """通过框架转移后台任务和投递结果，取消时等待内部工具任务退出。"""
         execution: asyncio.Task[Any] | None = None
         collected: list[ToolChunk | ToolResponse] = []
 
@@ -43,6 +43,6 @@ class ToolExecutionMiddleware(MiddlewareBase):
                 raise
             execution.cancel()
             await asyncio.gather(execution, return_exceptions=True)
-            # 并发执行器通过 Toolkit 的中断结果结束本轮，避免重复调用工具。
+            # 将 Toolkit 的中断结果交给并发执行器，标记本轮工具调用结束。
             for item in collected:
                 yield item
