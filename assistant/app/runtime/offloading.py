@@ -24,25 +24,30 @@ class ToolExecutionMiddleware(MiddlewareBase):
         next_handler: Callable[..., AsyncGenerator[ToolChunk | ToolResponse]],
     ) -> AsyncGenerator[ToolChunk | ToolResponse]:
         """通过框架转移后台任务和投递结果，取消时等待内部工具任务退出。"""
-        execution: asyncio.Task[Any] | None = None
-        collected: list[ToolChunk | ToolResponse] = []
+        tool_task: asyncio.Task[Any] | None = None
+        captured_results: list[ToolChunk | ToolResponse] = []
 
-        async def execute(**kwargs: Any) -> AsyncGenerator[ToolChunk | ToolResponse]:
+        async def execute_and_capture(
+            **kwargs: Any,
+        ) -> AsyncGenerator[ToolChunk | ToolResponse]:
             """记录框架创建的执行任务及其原生结果。"""
-            nonlocal execution
-            execution = asyncio.current_task()
+            nonlocal tool_task
+            tool_task = asyncio.current_task()
             async for item in next_handler(**kwargs):
-                collected.append(item)
+                captured_results.append(item)
                 yield item
 
         try:
-            async for item in self._offload.on_acting(agent, input_kwargs, execute):
+            async for item in self._offload.on_acting(
+                agent, input_kwargs, execute_and_capture
+            ):
                 yield item
         except asyncio.CancelledError:
-            if execution is None or execution is asyncio.current_task():
+            if tool_task is None or tool_task is asyncio.current_task():
                 raise
-            execution.cancel()
-            await asyncio.gather(execution, return_exceptions=True)
+            tool_task.cancel()
+            # 等待收尾期间，execute_and_capture 仍会记录 Toolkit 的中断结果。
+            await asyncio.gather(tool_task, return_exceptions=True)
             # 将 Toolkit 的中断结果交给并发执行器，标记本轮工具调用结束。
-            for item in collected:
+            for item in captured_results:
                 yield item

@@ -24,6 +24,7 @@ class ModelClients:
             raise RuntimeError("模型装配需要运行任务")
         native_model: Any = model
         stack = AsyncExitStack()
+        # 延迟读取 client：with_options 成功时关闭新客户端，失败时仍清理原客户端。
         stack.push_async_callback(lambda: native_model.client.close())
         self._stacks.add(stack)
         task.add_done_callback(lambda _: self._finished(stack))

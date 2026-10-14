@@ -35,12 +35,9 @@ class SessionService:
         self._attachments = AttachmentService(runtime.workspace_manager)
         self._lock = asyncio.Lock()
 
-    def _identity(self, owner: tuple[str, str]) -> tuple[str, str]:
-        """将已认证的站点和用户名映射为运行用户及默认 Agent。"""
-        user_id = json.dumps(owner, ensure_ascii=False, separators=(",", ":"))
-        return user_id, self._catalog.agent_id(
-            user_id, self._catalog.definitions.default
-        )
+    def _user_id(self, owner: tuple[str, str]) -> str:
+        """将已认证的站点和用户名编码为运行用户标识。"""
+        return json.dumps(owner, ensure_ascii=False, separators=(",", ":"))
 
     async def execute(
         self, command: Command, owner: tuple[str, str], erp: ERPNext
@@ -75,13 +72,12 @@ class SessionService:
                     user_id, row = await self._get_session(owner, command.session_id)
                     clients = {"erpnext": erp}
                     match command.action:
-                        case "interrupt" | "cancel":
-                            operation = (
-                                self._runtime.interrupt
-                                if command.action == "interrupt"
-                                else self._runtime.cancel
+                        case "interrupt":
+                            return await self._runtime.interrupt(
+                                user_id, row.id, clients
                             )
-                            return await operation(user_id, row.id, clients)
+                        case "cancel":
+                            return await self._runtime.cancel(user_id, row.id, clients)
                         case "resume":
                             return await self._runtime.resume(user_id, row.id, clients)
                         case "confirm":
@@ -96,15 +92,15 @@ class SessionService:
     ) -> tuple[str, SessionRecord]:
         if session_id is None:
             raise AgentError("缺少会话 ID。")
-        user_id, _ = self._identity(owner)
+        user_id = self._user_id(owner)
         return user_id, await self._runtime.get(user_id, str(session_id))
 
     async def list(self, owner: tuple[str, str]) -> dict[str, list[SessionListItem]]:
-        user_id, _ = self._identity(owner)
+        user_id = self._user_id(owner)
         return await self._runtime.list(user_id)
 
     async def create(self, owner: tuple[str, str]) -> dict[str, str]:
-        user_id, _ = self._identity(owner)
+        user_id = self._user_id(owner)
         return {"id": (await self._runtime.create(user_id)).id}
 
     async def messages(

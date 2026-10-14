@@ -147,25 +147,33 @@ class RunController:
             agent = await self._storage.get_agent(user_id, row.agent_id)
             if agent is None:
                 break
-            calls = {
+            pending_calls_by_id = {
                 call.id: call
                 for call in row.state.get_awaiting_tool_calls(agent.data.name)
                 if call.state == ToolCallState.ASKING
             }
-            ids = [result.tool_call.id for result in event.confirm_results]
-            if not ids or len(ids) != len(set(ids)) or set(ids) - calls.keys():
+            submitted_call_ids = [
+                result.tool_call.id for result in event.confirm_results
+            ]
+            if (
+                not submitted_call_ids
+                or len(submitted_call_ids) != len(set(submitted_call_ids))
+                or set(submitted_call_ids) - pending_calls_by_id.keys()
+            ):
                 raise RunError("工具确认已失效或不属于当前任务。", "conflict")
-            event = event.model_copy(
+            execution_event = event.model_copy(
                 update={
                     "confirm_results": [
                         result.model_copy(
-                            update={"tool_call": calls[result.tool_call.id]}
+                            update={
+                                "tool_call": pending_calls_by_id[result.tool_call.id]
+                            }
                         )
                         for result in event.confirm_results
                     ]
                 }
             )
             self._contexts.bind(user_id, root.id, clients)
-            self._spawn(user_id, row, event)
+            self._spawn(user_id, row, execution_event)
             return ChatTriggerResponse(session_id=root.id)
         raise RunError("工具确认已失效或不属于当前任务。", "conflict")

@@ -88,10 +88,16 @@ def test_docker_user_isolation_and_session_directories(
         async with app:
             service = SessionService(app)
             owner = ("site", "owner")
-            user_id, agent_id = service._identity(owner)
+            user_id = service._user_id(owner)
+            agent_id = service._catalog.agent_id(
+                user_id, service._catalog.definitions.default
+            )
             workspaces = []
             for session_owner in [owner, owner, ("site", "another-owner")]:
-                session_user, session_agent = service._identity(session_owner)
+                session_user = service._user_id(session_owner)
+                session_agent = service._catalog.agent_id(
+                    session_user, service._catalog.definitions.default
+                )
                 session_id = (await service.create(session_owner))["id"]
                 record = await service._runtime._storage.get_session(
                     session_user, session_agent, session_id

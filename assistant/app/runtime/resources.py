@@ -28,17 +28,19 @@ async def equip_resources(
 ) -> None:
     """按角色装配资源，安装记录、连接和操作锁由框架管理。"""
     # _declared_specs 只读取配置声明；list_mcps 会建立 MCP 连接。
-    current = {
+    reusable_declarations = {
         client.name: client
         for client in workspace._declared_specs(agent_id, session_id)
     }
     desired = {name: catalog.mcps[name] for name in definition.mcps}
-    for name, client in list(current.items()):
+    # 先移除过期或配置变化的声明，剩余声明可继续复用。
+    for name, client in list(reusable_declarations.items()):
         if name not in desired or client.model_dump() != desired[name].model_dump():
             await workspace.remove_mcp(name, agent_id=agent_id, session_id=session_id)
-            del current[name]
+            del reusable_declarations[name]
+    # 全部移除完成后，按角色声明顺序补齐缺失的 MCP。
     for name, client in desired.items():
-        if name not in current:
+        if name not in reusable_declarations:
             await workspace.add_mcp(
                 MCPClient.model_validate(client.model_dump()),
                 agent_id=agent_id,

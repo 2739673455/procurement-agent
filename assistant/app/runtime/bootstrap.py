@@ -23,7 +23,7 @@ from .resources import RoleMiddleware, equip_resources
 from .runs import RunController
 from .runtime import Runtime
 from .teams import TeamService
-from .workspaces import session_directory_middlewares
+from .workspaces import prepare_session_directory_middlewares
 
 
 def create_runtime(
@@ -71,20 +71,21 @@ def create_runtime(
             definition,
         )
         business_tools = catalog.create_tools(definition, context)
-        return [
-            RoleMiddleware(
-                definition,
-                catalog=catalog,
-                storage=storage,
-                message_bus=message_bus,
-                workspace_manager=workspace_manager,
-                user_id=user_id,
-                agent_id=agent_id,
-                session_id=session_id,
-                business_tools=business_tools,
-            ),
-            *await session_directory_middlewares(session_id, workspace),
-        ]
+        role_middleware = RoleMiddleware(
+            definition,
+            catalog=catalog,
+            storage=storage,
+            message_bus=message_bus,
+            workspace_manager=workspace_manager,
+            user_id=user_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            business_tools=business_tools,
+        )
+        directory_middlewares = await prepare_session_directory_middlewares(
+            session_id, workspace
+        )
+        return [role_middleware, *directory_middlewares]
 
     runtime = create_app(
         storage=storage,
