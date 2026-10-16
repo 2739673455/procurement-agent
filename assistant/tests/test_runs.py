@@ -260,7 +260,7 @@ def test_tool_history_restored_and_credentials_bound(
             assert any(
                 isinstance(block, ToolResultBlock) for block in history[-1].content
             )
-            user_id, _ = service._identity(("site", "owner"))
+            user_id = service._user_id(("site", "owner"))
             credentials = await service._runtime._storage.list_credentials(user_id)
             assert len(credentials) == 1
             assert "credential-a" not in str([record.data for record in credentials])
@@ -348,7 +348,10 @@ def test_owner_isolation_delete_and_disconnect(
                 for e in events
             ), events
             assert (await command(service, "list"))["sessions"] == []
-            user_id, agent_id = service._identity(("site", "owner"))
+            user_id = service._user_id(("site", "owner"))
+            agent_id = service._catalog.agent_id(
+                user_id, service._catalog.definitions.default
+            )
             assert (
                 await service._runtime._storage.get_session(
                     user_id, agent_id, identifier
@@ -409,7 +412,10 @@ def test_native_model_factory_uses_stored_provider_credentials(
 
         async with service_at(tmp_path) as service:
             identifier = (await command(service, "create"))["id"]
-            user_id, agent_id = service._identity(("site", "owner"))
+            user_id = service._user_id(("site", "owner"))
+            agent_id = service._catalog.agent_id(
+                user_id, service._catalog.definitions.default
+            )
             record = await service._runtime._storage.get_session(
                 user_id, agent_id, identifier
             )
@@ -573,7 +579,7 @@ def test_stop_during_tools_preserves_result_pairs(
                 await command(service, action, identifier)
                 await wait_for_idle(
                     service._runtime,
-                    service._identity(("site", "owner"))[0],
+                    service._user_id(("site", "owner")),
                     identifier,
                 )
                 assert started == exited == count
@@ -581,7 +587,10 @@ def test_stop_during_tools_preserves_result_pairs(
                 e["type"] == "REPLY_END" and e["finished_reason"] == "interrupted"
                 for e in events
             ), events
-            user_id, agent_id = service._identity(("site", "owner"))
+            user_id = service._user_id(("site", "owner"))
+            agent_id = service._catalog.agent_id(
+                user_id, service._catalog.definitions.default
+            )
             record = await service._runtime._storage.get_session(
                 user_id, agent_id, identifier
             )
@@ -832,7 +841,10 @@ def test_agent_setup_failure_closes_all_model_clients(
         async with service_at(tmp_path) as service:
             monkeypatch.setattr(Agent, "__init__", fail_setup)
             identifier = (await command(service, "create"))["id"]
-            user_id, agent_id = service._identity(("site", "owner"))
+            user_id = service._user_id(("site", "owner"))
+            agent_id = service._catalog.agent_id(
+                user_id, service._catalog.definitions.default
+            )
             record = await service._runtime._storage.get_session(
                 user_id, agent_id, identifier
             )

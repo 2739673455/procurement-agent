@@ -95,7 +95,7 @@ def session_directory(workspace: WorkspaceBase, session_id: str) -> str:
     return workspace.get_backend().join_path(workspace.workdir, "sessions", session_id)
 
 
-async def session_directory_middlewares(
+async def prepare_session_directory_middlewares(
     session_id: str, workspace: WorkspaceBase
 ) -> list[MiddlewareBase]:
     """确保会话目录存在，并为本轮框架工具生成目录绑定中间件。"""

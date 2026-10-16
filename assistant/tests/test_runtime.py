@@ -65,7 +65,7 @@ def test_interrupt_restart_resume_and_cancel(
             await asyncio.wait_for(entered.wait(), 5)
             await command(service, action, identifier)
             await wait_for_idle(
-                service._runtime, service._identity(("site", "owner"))[0], identifier
+                service._runtime, service._user_id(("site", "owner")), identifier
             )
             state = await command(service, "messages", identifier)
             assert state["resumable"] and not state["running"]
@@ -133,6 +133,26 @@ def test_native_permission_confirmation_and_parked_interrupt(
                 reply_id=request.reply_id,
                 confirm_results=[ConfirmResult(confirmed=True, tool_call=forged)],
             )
+            # 空提交、重复 ID 和其他任务的调用均不能消耗待确认请求。
+            for submitted_calls in (
+                [],
+                [forged, forged],
+                [forged.model_copy(update={"id": "unknown-call"})],
+            ):
+                with pytest.raises(RunError):
+                    await command(
+                        service,
+                        "confirm",
+                        identifier,
+                        confirmation=UserConfirmResultEvent(
+                            reply_id=request.reply_id,
+                            confirm_results=[
+                                ConfirmResult(confirmed=True, tool_call=call)
+                                for call in submitted_calls
+                            ],
+                        ),
+                    )
+                assert not called
             # 取消后，等待权限确认的调用可通过确认操作继续执行。
             await command(service, "cancel", identifier)
             assert (await command(service, "messages", identifier))[
@@ -211,7 +231,7 @@ def test_native_team_context_controls_and_cleanup(
                             {"name": "采购查询", "description": "检索物料"},
                         )
                     if leader_count == 2:
-                        user_id, _ = service._identity(("site", "owner"))
+                        user_id = service._user_id(("site", "owner"))
                         agent_id = service._runtime._app.state.catalog.agent_id(
                             user_id, "item_researcher"
                         )
@@ -248,7 +268,7 @@ def test_native_team_context_controls_and_cleanup(
         monkeypatch.setattr(_chat, "get_model", get_model)
         async with service_at(tmp_path) as service:
             identifier = (await command(service, "create"))["id"]
-            user_id, _ = service._identity(("site", "owner"))
+            user_id = service._user_id(("site", "owner"))
             initial_root = await service._runtime._storage.get_session(
                 user_id, "", identifier
             )
@@ -400,7 +420,10 @@ def test_native_mcp_and_skill_role_resources(
             ], [event for event in events if event.get("finished_reason") == "error"]
             state = await command(service, "messages", identifier)
             confirmation = state["confirmations"][0]
-            user_id, agent_id = service._identity(("site", "owner"))
+            user_id = service._user_id(("site", "owner"))
+            agent_id = service._catalog.agent_id(
+                user_id, service._catalog.definitions.default
+            )
             row = await service._runtime._storage.get_session(
                 user_id, agent_id, identifier
             )
@@ -458,7 +481,10 @@ def test_native_mcp_and_skill_role_resources(
             await service._runtime._app.state.chat_run_registry.get(identifier)
             history = (await command(service, "messages", identifier))["messages"]
             assert "mcp:hello" in str(history[-1].content)
-            user_id, agent_id = service._identity(("site", "owner"))
+            user_id = service._user_id(("site", "owner"))
+            agent_id = service._catalog.agent_id(
+                user_id, service._catalog.definitions.default
+            )
             row = await service._runtime._storage.get_session(
                 user_id, agent_id, identifier
             )
