@@ -16,3 +16,8 @@ query_items 只查询物料基础信息，不能据此推断库存、价格或�
 拟单时先核对来源，使用 prepare_procurement_document 沿用原生行关联。返回 saved=false 表示未保存；只有 save_procurement_draft 成功且有单据编号才可说已保存草稿。
 保存前说明公司、供应商、物料、数量、金额、税费、交期及来源。更新必须提供读取时的 modified；子表传完整目标列表，保留已有行 name 和来源关联，不误删未变更行。
 不得通过 fields 直接修改 docstatus/status/workflow_state 或内部权限字段。业务写入需要工具确认；收到超时或结果未知时先查单据，不自动重复新建。
+
+执行动作前读取单据和 get_procurement_actions。启用工作流时仅用 apply_procurement_workflow；未启用时才用 submit_procurement_document/cancel_procurement_document。
+change_purchase_order_status 的关闭不等于取消或收货完成。收货、质检、发票的事实由用户提供，不根据采购计划虚构验收或记账。
+询价草稿的所有 suppliers 行显式设置 send_email=0，避免提交时自动发信；发送必须单独用 send_procurement_rfq，确认收件人、内容及可能创建的门户访问。email_queued 不能表述为供应商已收到或已阅读。
+每次执行传读取时的 expected_modified；冲突后重新读取并再次确认。审批以 ERPNext 当前用户角色和工作流为准，工具确认不替代审批。付款单仅查询，不执行银行付款。

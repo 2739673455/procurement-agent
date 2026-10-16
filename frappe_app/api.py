@@ -10,8 +10,8 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 
 import frappe
-from frappe.sessions import get_csrf_token
 from buying_ai.context import page_snapshot
+from frappe.sessions import get_csrf_token
 from werkzeug.wrappers import Response
 
 

@@ -62,6 +62,17 @@ def test_draft_writes_preserve_version_identity_and_links() -> None:
                     erp, "Purchase Order", {"supplier": "x"}, "PO-1", "old"
                 )
             assert requests[-1].method == "GET"
+            for rows in (
+                [{"name": "another-document-row"}],
+                [{"name": "row-1"}, {"name": "row-1"}],
+            ):
+                with pytest.raises(AgentError, match="子表行"):
+                    await save_draft(
+                        erp, "Purchase Order", {"items": rows}, "PO-1", "v1"
+                    )
+                assert requests[-1].method == "GET"
+            with pytest.raises(AgentError, match="子表行"):
+                await save_draft(erp, "Purchase Order", {"items": [{"name": "row-1"}]})
             original["docstatus"] = 1
             with pytest.raises(AgentError, match="草稿"):
                 await save_draft(erp, "Purchase Order", {"supplier": "x"}, "PO-1", "v1")

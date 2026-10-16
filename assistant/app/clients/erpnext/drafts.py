@@ -97,6 +97,28 @@ def validate_fields(fields: dict[str, Any]) -> None:
     check(fields, root=True)
 
 
+def validate_child_names(fields: dict[str, Any], original: dict[str, Any]) -> None:
+    """已有子表行只能引用本单据同一子表，避免更新其他单据的行。"""
+    for field, value in fields.items():
+        if not isinstance(value, list):
+            continue
+        existing = original.get(field, [])
+        allowed = (
+            {row.get("name") for row in existing if isinstance(row, dict)}
+            if isinstance(existing, list)
+            else set()
+        )
+        seen: set[str] = set()
+        for row in value:
+            if not isinstance(row, dict) or not (name := row.get("name")):
+                continue
+            if not isinstance(name, str) or name not in allowed or name in seen:
+                raise AgentError(
+                    "子表行 name 必须属于当前单据且不能重复；新建行不传 name。"
+                )
+            seen.add(name)
+
+
 async def prepare_document(
     erp: ERPNext,
     conversion: Conversion,
@@ -142,6 +164,7 @@ async def save_draft(
     if name is None:
         if expected_modified is not None:
             raise AgentError("新建草稿不接受 expected_modified。")
+        validate_child_names(fields, {})
         document = {"doctype": doctype, **fields, "docstatus": 0}
         method = "insert"
     else:
@@ -152,6 +175,7 @@ async def save_draft(
             raise AgentError("只能通过此工具修改草稿。")
         if document.get("modified") != expected_modified:
             raise AgentError("单据已被修改，请重新读取并确认变更。", 409)
+        validate_child_names(fields, document)
         document.update(fields)
         # 保留读取时的 modified；frappe.client.save 在写入时再次检查并发版本。
         method = "save"

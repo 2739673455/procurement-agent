@@ -66,6 +66,10 @@ def test_procurement_read_contracts() -> None:
             assert b"%2FA%3Fx%3D1" in requests[-1].url.raw_path
             await procurement.create_get_schema_tool(context)(doctype="Purchase Order")
             assert requests[-1].url.path == "/api/v2/doctype/Purchase Order/meta"
+            await procurement.create_get_schema_tool(context)(
+                doctype="Purchase Order Item"
+            )
+            assert requests[-1].url.path == "/api/v2/doctype/Purchase Order Item/meta"
             await procurement.create_run_report_tool(context)(
                 report_name="Purchase Order Analysis", filters={"company": "公司"}
             )

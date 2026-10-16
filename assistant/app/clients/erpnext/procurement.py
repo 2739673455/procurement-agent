@@ -39,6 +39,24 @@ type ProcurementDocType = Literal[
     "Supplier Scorecard",
     "Blanket Order",
 ]
+type ProcurementSchemaType = (
+    ProcurementDocType
+    | Literal[
+        "Item Default",
+        "Item Supplier",
+        "UOM Conversion Detail",
+        "Material Request Item",
+        "Request for Quotation Item",
+        "Request for Quotation Supplier",
+        "Supplier Quotation Item",
+        "Purchase Order Item",
+        "Purchase Receipt Item",
+        "Purchase Invoice Item",
+        "Purchase Taxes and Charges",
+        "Payment Schedule",
+        "Quality Inspection Reading",
+    ]
+)
 type ProcurementReport = Literal[
     "Stock Balance",
     "Stock Projected Qty",

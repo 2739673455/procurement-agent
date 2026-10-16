@@ -64,7 +64,9 @@ def create_get_document_tool(context: RunContext) -> FunctionTool:
 def create_get_schema_tool(context: RunContext) -> FunctionTool:
     erp: ERPNext = context.clients["erpnext"]
 
-    async def get_procurement_schema(doctype: api.ProcurementDocType) -> dict[str, Any]:
+    async def get_procurement_schema(
+        doctype: api.ProcurementSchemaType,
+    ) -> dict[str, Any]:
         """读取 v16 DocType 元数据，包括字段类型、必填项和链接；不代表写权限。"""
         return await erp.get("/api/v2/doctype/" + quote(doctype, safe="") + "/meta")
 

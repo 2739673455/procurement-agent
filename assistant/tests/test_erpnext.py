@@ -88,3 +88,31 @@ def test_erpnext_reports_authentication_and_upstream_errors() -> None:
                 assert failure.value.status == status
 
     asyncio.run(scenario())
+
+
+def test_writes_keep_csrf_and_cookie_per_user() -> None:
+    async def scenario() -> None:
+        seen = []
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            seen.append(
+                (request.headers["Cookie"], request.headers["X-Frappe-CSRF-Token"])
+            )
+            return httpx.Response(
+                200,
+                json={"message": {"name": "DOC"}},
+                headers={"Set-Cookie": "sid=wrong; Path=/"},
+            )
+
+        async with httpx.AsyncClient(
+            base_url="https://erp.test", transport=httpx.MockTransport(handle)
+        ) as pool:
+            alice, bob = ERPNext("A", pool, "csrf-A"), ERPNext("B", pool, "csrf-B")
+            await asyncio.gather(
+                alice.post("/api/method/frappe.client.insert", {"doc": {}}),
+                bob.post("/api/method/frappe.client.insert", {"doc": {}}),
+            )
+            await alice.post("/api/method/frappe.client.save", {"doc": {}})
+        assert seen == [("sid=A", "csrf-A"), ("sid=B", "csrf-B"), ("sid=A", "csrf-A")]
+
+    asyncio.run(scenario())
