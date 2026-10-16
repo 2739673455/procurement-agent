@@ -23,7 +23,11 @@ class AuthenticatedUser:
 async def authenticate(command: Command, request: Request) -> AuthenticatedUser:
     """用请求中的 sid 向 ERPNext 核实身份，并设置请求日志的用户信息。"""
     client: httpx.AsyncClient = request.app.state.erpnext_http
-    erp = ERPNext(command.sid.get_secret_value(), client)
+    erp = ERPNext(
+        command.sid.get_secret_value(),
+        client,
+        command.csrf_token.get_secret_value() if command.csrf_token else None,
+    )
     user = await erp.authenticate()
     context.user_id_ctx.set(user)
     return AuthenticatedUser((cfg.erpnext.site, user), erp)

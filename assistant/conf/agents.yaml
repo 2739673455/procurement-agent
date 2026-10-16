@@ -30,6 +30,8 @@ agents:
       - app.tools.procurement:create_get_schema_tool
       - app.tools.procurement:create_run_report_tool
       - app.tools.procurement:create_stock_tool
+      - app.tools.drafts:create_prepare_document_tool
+      - app.tools.drafts:create_save_draft_tool
     mcps: [] # 引用 mcp.yaml 的 servers 配置名。
     skills: [item-query]
     members: [item_researcher] # 允许通过 AgentInvite 邀请加入团队的其他 Agent。

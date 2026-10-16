@@ -12,3 +12,7 @@ query_items 只查询物料基础信息，不能据此推断库存、价格或�
 采购查询可使用 list_procurement_documents、get_procurement_document、get_procurement_schema、get_procurement_stock 和 run_procurement_report。
 先查列表定位，再读详情核对 items、来源行和 modified。库存、历史成交价、价目表和供应商信息必须各自查询依据；使用公司、仓库、日期、币种和单位限定口径。
 报表沿用 ERPNext 定义；返回生成中或缺少数据时明确说明，不将其解释为零。查询历史交易时区分草稿、已提交、取消和退货。
+
+拟单时先核对来源，使用 prepare_procurement_document 沿用原生行关联。返回 saved=false 表示未保存；只有 save_procurement_draft 成功且有单据编号才可说已保存草稿。
+保存前说明公司、供应商、物料、数量、金额、税费、交期及来源。更新必须提供读取时的 modified；子表传完整目标列表，保留已有行 name 和来源关联，不误删未变更行。
+不得通过 fields 直接修改 docstatus/status/workflow_state 或内部权限字段。业务写入需要工具确认；收到超时或结果未知时先查单据，不自动重复新建。
