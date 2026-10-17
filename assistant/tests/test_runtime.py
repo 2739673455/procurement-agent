@@ -192,11 +192,12 @@ def test_native_team_context_controls_and_cleanup(
 
         owners = []
 
-        async def query(erp: str, **kwargs: Any) -> dict[str, Any]:
+        async def query(erp: str, doctype: str, **kwargs: Any) -> dict[str, Any]:
+            assert doctype == "Item"
             owners.append(erp)
             return {"data": []}
 
-        monkeypatch.setattr(items.items, "query_items", query)
+        monkeypatch.setattr(items.api, "list_documents", query)
         member_entered = asyncio.Event()
         leader_entered = asyncio.Event()
         release_member = asyncio.Event()

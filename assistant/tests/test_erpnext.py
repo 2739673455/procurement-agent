@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from app.clients.erpnext.client import ERPNext
-from app.clients.erpnext.items import query_items
+from app.clients.erpnext.procurement import list_documents
 from app.errors.agent import AgentError
 
 
@@ -44,8 +44,8 @@ def test_shared_erpnext_pool_keeps_user_cookies_separate() -> None:
                 "alice",
                 "bob",
             ]
-            assert await query_items(
-                alice, filters=[["item_code", "like", r"%ABC\_1%"]]
+            assert await list_documents(
+                alice, "Item", filters=[["item_code", "like", r"%ABC\_1%"]]
             ) == {"data": [{"name": "ABC_1"}]}
             assert not pool.is_closed
         assert pool.is_closed

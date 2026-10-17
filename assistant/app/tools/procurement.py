@@ -8,7 +8,6 @@ from agentscope.tool import FunctionTool
 
 from app.clients.erpnext import procurement as api
 from app.clients.erpnext.client import ERPNext
-from app.clients.erpnext.items import Filters
 from app.runtime.context import RunContext
 from app.tools.common import erp_tool
 
@@ -19,8 +18,8 @@ def create_list_documents_tool(context: RunContext) -> FunctionTool:
     async def list_procurement_documents(
         doctype: api.ProcurementDocType,
         fields: list[str] | None = None,
-        filters: Filters | None = None,
-        or_filters: Filters | None = None,
+        filters: api.Filters | None = None,
+        or_filters: api.Filters | None = None,
         order_by: str | None = None,
         limit_start: api.PageStart = 0,
         limit_page_length: api.PageSize = 20,

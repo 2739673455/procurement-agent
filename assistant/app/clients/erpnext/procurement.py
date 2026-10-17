@@ -7,7 +7,9 @@ from urllib.parse import quote
 from pydantic import Field
 
 from .client import ERPNext
-from .items import Filters
+
+# 过滤条件沿用 Frappe 的列表或字典形式，操作符和查询值由接口解释。
+type Filters = list[list[Any]] | dict[str, Any]
 
 # 只开放采购所需对象；不开放 User、凭据或任意 DocType。
 type ProcurementDocType = Literal[

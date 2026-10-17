@@ -7,9 +7,8 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from agentscope.message import TextBlock, ToolResultState
 from agentscope.tool import ToolChunk
-from pydantic import ValidationError
 
-from app.clients.erpnext.items import Filters
+from app.clients.erpnext.procurement import Filters
 from app.runtime.context import RunContext
 from app.tools.items import create_items_tool
 
@@ -27,11 +26,15 @@ def test_item_tool_rejects_invalid_inputs_before_request() -> None:
             {"limit_start": -1},
             {"limit_start": True},
             {"limit_page_length": 0},
+            {"limit_page_length": 201},
+            {"limit_page_length": True},
+            {"doctype": "Supplier"},
             {"limit_page_length": "20"},
             {"limit_page_length": 1.5},
         ):
-            with pytest.raises(ValidationError):
-                await tool(**parameters)
+            result = await tool(**parameters)
+            assert isinstance(result, ToolChunk)
+            assert result.state == ToolResultState.ERROR
         client.get.assert_not_awaited()
         result = await tool()
         assert isinstance(result, ToolChunk)
@@ -39,6 +42,11 @@ def test_item_tool_rejects_invalid_inputs_before_request() -> None:
         client.get.assert_awaited_once_with(
             "/api/resource/Item", {"limit_start": 0, "limit_page_length": 20}
         )
+        for size in (1, 200):
+            result = await tool(limit_page_length=size)
+            assert isinstance(result, ToolChunk)
+            assert result.state == ToolResultState.SUCCESS
+            assert client.get.call_args.args[1]["limit_page_length"] == size
 
     asyncio.run(scenario())
 
@@ -83,3 +91,39 @@ def test_item_tool_preserves_native_filters_and_response(
     assert parameters["order_by"] == "item_code desc"
     assert parameters["limit_start"] == 5
     assert parameters["limit_page_length"] == 2
+
+
+@pytest.mark.parametrize("business_error", [True, False])
+def test_item_tool_uses_shared_error_handling_and_read_only_permission(
+    business_error: bool,
+) -> None:
+    from agentscope.permission import PermissionBehavior
+
+    from app.errors.agent import AgentError
+
+    client = Mock()
+    client.get = AsyncMock(
+        side_effect=AgentError("当前用户无查询权限。", 403)
+        if business_error
+        else RuntimeError("secret-credential-and-stack")
+    )
+    tool = create_items_tool(RunContext("user", "session", {"erpnext": client}))
+
+    async def scenario() -> None:
+        assert tool.name == "query_items" and tool.is_read_only
+        assert (await tool.check_permissions({})).behavior == PermissionBehavior.ALLOW
+        result = await tool()
+        assert isinstance(result, ToolChunk)
+        assert result.state == ToolResultState.ERROR
+        block = result.content[0]
+        assert isinstance(block, TextBlock)
+        error = json.loads(block.text)["error"]
+        assert "secret" not in error
+        assert error == (
+            "当前用户无查询权限。"
+            if business_error
+            else "ERPNext 工具执行失败，请检查参数或重新查询单据状态。"
+        )
+        client.get.assert_awaited_once()
+
+    asyncio.run(scenario())

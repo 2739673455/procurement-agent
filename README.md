@@ -137,7 +137,7 @@ Bash 和内置文件工具在容器执行，ERPNext 工具在服务端执行并�
 
 | 批次 | 工具 | 行为 |
 | --- | --- | --- |
-| 查询 | `query_items`、`list_procurement_documents`、`get_procurement_document`、`get_procurement_schema`、`get_procurement_stock`、`run_procurement_report` | 采购对象白名单内的列表、详情、v16 元数据、Bin 库存和原生报表；新列表工具每页最多 200 条。 |
+| 查询 | `query_items`、`list_procurement_documents`、`get_procurement_document`、`get_procurement_schema`、`get_procurement_stock`、`run_procurement_report` | 采购对象白名单内的列表、详情、v16 元数据、Bin 库存和原生报表；列表工具（含 query_items）每页最多 200 条。 |
 | 拟单 | `prepare_procurement_document` | 采购需求→询价/订单、询价→报价、报价→订单、订单→收货/发票、收货→发票/退货；返回未保存文档，保留原生来源行关联。 |
 | 拟单 | `save_procurement_draft` | 新建或更新采购需求、询价、报价、订单、收货、发票、质检草稿；不会提交。 |
 | 执行 | `get_procurement_actions`、`apply_procurement_workflow` | 读取并执行当前用户的原生工作流动作。 |

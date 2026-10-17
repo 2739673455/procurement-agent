@@ -23,7 +23,7 @@ from agentscope.tool import ToolChoice
 from pydantic import SecretStr, TypeAdapter
 
 from app.clients.erpnext.client import ERPNext
-from app.clients.erpnext.items import Filters
+from app.clients.erpnext.procurement import Filters
 from app.config import agents, mcp
 from app.config.loader import ROOT_DIR
 from app.contracts.sessions import Command
@@ -235,18 +235,20 @@ def test_tool_history_restored_and_credentials_bound(
 
         async def query(
             erp: str,
+            doctype: str,
             *,
             filters: Filters | None,
             limit_start: int,
             limit_page_length: int,
             **kwargs: Any,
         ) -> dict[str, Any]:
+            assert doctype == "Item"
             owners.append(erp)
             assert filters == [["item_code", "like", "%bolt%"]]
             assert (limit_start, limit_page_length) == (0, 20)
             return {"data": [{"item_code": "BOLT"}]}
 
-        monkeypatch.setattr(items.items, "query_items", query)
+        monkeypatch.setattr(items.api, "list_documents", query)
         async with service_at(tmp_path) as service:
             identifier = (await command(service, "create"))["id"]
             events = await run_turn(service, identifier, message="查询螺丝")
@@ -483,11 +485,12 @@ def test_concurrent_users_get_separate_erp_clients(
 
         owners = []
 
-        async def query(erp: str, **kwargs: Any) -> dict[str, Any]:
+        async def query(erp: str, doctype: str, **kwargs: Any) -> dict[str, Any]:
+            assert doctype == "Item"
             owners.append(erp)
             return {"data": []}
 
-        monkeypatch.setattr(items.items, "query_items", query)
+        monkeypatch.setattr(items.api, "list_documents", query)
         use_models(
             monkeypatch,
             [
