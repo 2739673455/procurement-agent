@@ -130,3 +130,33 @@ Assistant 入口为 `POST /sessions`，Frappe 代理入口为 `/api/method/buyin
 工作空间按站点和用户隔离，同一用户共享容器。宿主文件保存在 `assistant/data/workspaces/<workspace_id>/`，会话目录为 `/workspace/sessions/<session_id>/`，附件位于其中的 `attachments/`。Agent 可访问同一用户其他会话的文件；删除会话清理该会话目录，容器回收保留挂载文件。
 
 Bash 和内置文件工具在容器执行，ERPNext 工具在服务端执行并遵守用户权限。工具运行超过 10 秒后由框架转入后台，结果可自动唤醒推理。`image_inputs` 启用时直接传入图片内容，其他附件由工具按需读取。
+
+## 采购工具
+
+采购入口在 `assistant/conf/agents.yaml` 登记工具工厂。物料查询成员仍只有 `query_items`；新增工具仅开放给采购入口。所有请求携带当前 ERPNext 用户身份，不使用管理员凭据。
+
+| 批次 | 工具 | 行为 |
+| --- | --- | --- |
+| 查询 | `query_items`、`list_procurement_documents`、`get_procurement_document`、`get_procurement_schema`、`get_procurement_stock`、`run_procurement_report` | 采购对象白名单内的列表、详情、v16 元数据、Bin 库存和原生报表；列表工具（含 query_items）每页最多 200 条。 |
+| 拟单 | `prepare_procurement_document` | 采购需求→询价/订单、询价→报价、报价→订单、订单→收货/发票、收货→发票/退货；返回未保存文档，保留原生来源行关联。 |
+| 拟单 | `save_procurement_draft` | 新建或更新采购需求、询价、报价、订单、收货、发票、质检草稿；不会提交。 |
+| 执行 | `get_procurement_actions`、`apply_procurement_workflow` | 读取并执行当前用户的原生工作流动作。 |
+| 执行 | `submit_procurement_document`、`cancel_procurement_document` | 提交或取消单据；启用工作流时拒绝直接执行。 |
+| 执行 | `change_purchase_order_status` | 暂停、关闭或恢复已提交订单。 |
+| 执行 | `send_procurement_rfq` | 向已提交询价单中的指定已有地址发送询价，拒绝已发送行的重复发送。 |
+
+### 操作约定
+
+- 查询返回 ERPNext 原生 JSON；分页没有自动补齐。库存按库存单位理解，不能把没有可见 Bin 记录解释为零库存。报表使用原生筛选字段，预生成报表未完成时不能宣称已获得完整结果。
+- 所有拟单和执行工具设置原生 `ASK` 权限；发送、恢复或确认请求重新绑定当前业务客户端。确认不是 ERP 审批，ERPNext 仍校验权限和业务条件。
+- 草稿 `fields` 仅包含业务字段，禁止状态、所有者和内部标记。更新需读取最新 `modified` 并作为 `expected_modified` 提交；子表用完整目标列表，保留现有行 `name` 和来源关联，未提供的顶层字段保持不变。
+- 服务器以原生 `frappe.client.save` 的版本校验保存草稿。执行动作通过 `buying_ai.procurement.execute` 在同一事务中锁定单据并检查版本，再调用原生方法；不支持任意方法路径、绕过审批或级联删除。
+- ERPNext v16 的询价单提交会直接检查供应商行并发信。拟单时须显式将所有 `suppliers[].send_email` 设为 `0`；普通提交和工作流工具会拒绝仍启用自动发送的询价草稿。单独发送时，按已确认的 `recipients` 更新原生允许提交后修改的 `send_email`，再执行原生发送方法。该流程可能建立供应商门户访问，需预先配置门户和出站邮件；`email_queued` 不保证邮件已送达。
+- 写操作超时或未获得成功响应时返回“结果未知”，不自动重试；先查询单据或通信记录再决定后续动作。此版本不提供跨请求幂等键，不能盲目重放新建或发送调用。
+- Payment Entry 和应付数据仅供查询；本版本不执行实际付款，也不凭模型推测实际收货、质检或财务事实。
+
+### 部署与验证
+
+需要同步更新 Assistant 和 Frappe App Python 代码，并重启相应服务以加载新增 `buying_ai.procurement` 入口；不需要新增 DocType。Frappe 代理只向服务端传递当前会话的 `sid` 和 CSRF token，Assistant 将两者保存在内存客户端中。缺少 CSRF token 时只读操作仍可用，写操作会明确拒绝；不要通过关闭 CSRF 校验解决。
+
+本实现依据 ERPNext/Frappe `version-16` 原生 REST、单据映射和工作流方法。新增 HTTP 合约测试、真实 AgentScope 确认流程测试及 Frappe 入口替身测试可通过 `uv run --directory assistant python -m pytest -q` 运行。替身测试不替代已安装 ERPNext 站点上的权限、并发、工作流、库存/财务记账和邮件联调；上线前应在测试站点用采购员、审批人及无权限用户验证这些行为。

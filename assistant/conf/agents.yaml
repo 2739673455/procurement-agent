@@ -25,6 +25,19 @@ agents:
     builtin_tools: [Bash, Read, Write, Edit, Glob, Grep]
     tool_factories: # Python 模块:工厂函数；工厂接收 RunContext 并返回一个原生工具。
       - app.tools.items:create_items_tool
+      - app.tools.procurement:create_list_documents_tool
+      - app.tools.procurement:create_get_document_tool
+      - app.tools.procurement:create_get_schema_tool
+      - app.tools.procurement:create_run_report_tool
+      - app.tools.procurement:create_stock_tool
+      - app.tools.drafts:create_prepare_document_tool
+      - app.tools.drafts:create_save_draft_tool
+      - app.tools.actions:create_workflow_actions_tool
+      - app.tools.actions:create_submit_tool
+      - app.tools.actions:create_cancel_tool
+      - app.tools.actions:create_apply_workflow_tool
+      - app.tools.actions:create_order_status_tool
+      - app.tools.actions:create_send_rfq_tool
     mcps: [] # 引用 mcp.yaml 的 servers 配置名。
     skills: [item-query]
     members: [item_researcher] # 允许通过 AgentInvite 邀请加入团队的其他 Agent。

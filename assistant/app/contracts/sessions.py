@@ -41,6 +41,7 @@ class Command(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     sid: SecretStr
+    csrf_token: SecretStr | None = None  # 仅驻留认证客户端，不能进入模型或持久状态。
     action: Literal[
         "list",
         "create",

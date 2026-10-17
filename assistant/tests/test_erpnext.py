@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from app.clients.erpnext.client import ERPNext
-from app.clients.erpnext.items import query_items
+from app.clients.erpnext.procurement import list_documents
 from app.errors.agent import AgentError
 
 
@@ -44,8 +44,8 @@ def test_shared_erpnext_pool_keeps_user_cookies_separate() -> None:
                 "alice",
                 "bob",
             ]
-            assert await query_items(
-                alice, filters=[["item_code", "like", r"%ABC\_1%"]]
+            assert await list_documents(
+                alice, "Item", filters=[["item_code", "like", r"%ABC\_1%"]]
             ) == {"data": [{"name": "ABC_1"}]}
             assert not pool.is_closed
         assert pool.is_closed
@@ -86,5 +86,33 @@ def test_erpnext_reports_authentication_and_upstream_errors() -> None:
                 with pytest.raises(AgentError) as failure:
                     await ERPNext(case, pool).authenticate()
                 assert failure.value.status == status
+
+    asyncio.run(scenario())
+
+
+def test_writes_keep_csrf_and_cookie_per_user() -> None:
+    async def scenario() -> None:
+        seen = []
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            seen.append(
+                (request.headers["Cookie"], request.headers["X-Frappe-CSRF-Token"])
+            )
+            return httpx.Response(
+                200,
+                json={"message": {"name": "DOC"}},
+                headers={"Set-Cookie": "sid=wrong; Path=/"},
+            )
+
+        async with httpx.AsyncClient(
+            base_url="https://erp.test", transport=httpx.MockTransport(handle)
+        ) as pool:
+            alice, bob = ERPNext("A", pool, "csrf-A"), ERPNext("B", pool, "csrf-B")
+            await asyncio.gather(
+                alice.post("/api/method/frappe.client.insert", {"doc": {}}),
+                bob.post("/api/method/frappe.client.insert", {"doc": {}}),
+            )
+            await alice.post("/api/method/frappe.client.save", {"doc": {}})
+        assert seen == [("sid=A", "csrf-A"), ("sid=B", "csrf-B"), ("sid=A", "csrf-A")]
 
     asyncio.run(scenario())

@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import frappe
 from buying_ai.context import page_snapshot
+from frappe.sessions import get_csrf_token
 from werkzeug.wrappers import Response
 
 
@@ -42,6 +43,7 @@ def sessions(
         "message": message,
         "title": title,
         "sid": frappe.session.sid,
+        "csrf_token": get_csrf_token(),
     }
     if action == "confirm":
         payload["confirmation"] = frappe.parse_json(confirmation)
